@@ -625,16 +625,23 @@ Return a JSON object with these fields:
       }
 
       const sessionsWithContent = sessionSummaries.filter(ss => ss.aggregatedThemes.length > 0 || ss.aggregatedActionItems.length > 0);
+      const totalSessions = eventSessions.length;
+      const totalTables = sessionSummaries.reduce((sum, ss) => sum + ss.tableCount, 0);
 
       if (sessionsWithContent.length === 0) {
         return res.json({
           eventName: event.name,
           description: event.description,
           sessionSummaries,
-          aggregatedThemes: [],
-          aggregatedActionItems: [],
-          aggregatedOpenQuestions: [],
+          totalSessions,
+          totalTables,
+          themesWithFrequency: [],
+          keyQuestions: [],
+          keyInsights: [],
           overallSummary: "No session summaries available yet.",
+          detailedThemes: [],
+          notableQuotes: [],
+          deeperInsights: [],
         });
       }
 
@@ -653,21 +660,41 @@ Return a JSON object with these fields:
           messages: [
             {
               role: "system",
-              content: `You are an expert conference organizer synthesizing insights from multiple sessions at an event. Create a high-level synthesis that captures the event's key outcomes.
+              content: `You are an expert conference organizer synthesizing insights from ${totalSessions} sessions with ${totalTables} tables at an event. Create a comprehensive synthesis.
 
-Return a JSON object with:
-- "aggregatedThemes": array of 3-5 overarching themes across all sessions
-- "aggregatedActionItems": array of 3-5 priority action items from the event
-- "aggregatedOpenQuestions": array of 3-5 strategic questions for follow-up
-- "overallSummary": a 3-4 sentence executive summary of the event's key insights and outcomes`,
+Return a JSON object with these fields:
+
+1. "themesWithFrequency": array of objects with:
+   - "theme": the theme name
+   - "frequency": how many sessions mentioned this (number)
+   - "prevalence": "High" (>60%), "Medium" (30-60%), or "Low" (<30%)
+   
+2. "keyQuestions": array of 3-5 most important strategic questions for follow-up
+
+3. "keyInsights": array of 4-6 key insights or takeaways from the entire event
+
+4. "overallSummary": a 3-4 sentence executive summary of the event
+
+5. "detailedThemes": array of objects with:
+   - "theme": theme name
+   - "description": 2-3 sentence detailed explanation
+   - "keyPoints": array of 2-3 specific points discussed
+   - "sessions": which sessions this theme appeared in
+
+6. "notableQuotes": array of 3-5 interesting or impactful statements/ideas (paraphrased for privacy)
+
+7. "deeperInsights": array of 2-3 objects with:
+   - "insight": a deeper analytical observation about the event
+   - "analysis": 2-3 sentence AI analysis explaining the significance
+   - "recommendation": actionable suggestion for organizers/attendees`,
             },
             {
               role: "user",
-              content: `Event: ${event.name}\nDescription: ${event.description || 'Conference event'}\n\nSession Summaries:\n${sessionText}`,
+              content: `Event: ${event.name}\nDescription: ${event.description || 'Conference event'}\nTotal Sessions: ${totalSessions}\nTotal Tables: ${totalTables}\n\nSession Summaries:\n${sessionText}`,
             },
           ],
           response_format: { type: "json_object" },
-          max_completion_tokens: 1000,
+          max_completion_tokens: 2500,
         });
 
         const result = JSON.parse(response.choices[0]?.message?.content || "{}");
@@ -676,10 +703,15 @@ Return a JSON object with:
           eventName: event.name,
           description: event.description,
           sessionSummaries,
-          aggregatedThemes: result.aggregatedThemes || [],
-          aggregatedActionItems: result.aggregatedActionItems || [],
-          aggregatedOpenQuestions: result.aggregatedOpenQuestions || [],
+          totalSessions,
+          totalTables,
+          themesWithFrequency: result.themesWithFrequency || [],
+          keyQuestions: result.keyQuestions || [],
+          keyInsights: result.keyInsights || [],
           overallSummary: result.overallSummary || "Event summary generation complete.",
+          detailedThemes: result.detailedThemes || [],
+          notableQuotes: result.notableQuotes || [],
+          deeperInsights: result.deeperInsights || [],
         });
       } catch (aiError) {
         console.error("AI aggregation error:", aiError);
@@ -687,10 +719,15 @@ Return a JSON object with:
           eventName: event.name,
           description: event.description,
           sessionSummaries,
-          aggregatedThemes: [],
-          aggregatedActionItems: [],
-          aggregatedOpenQuestions: [],
+          totalSessions,
+          totalTables,
+          themesWithFrequency: [],
+          keyQuestions: [],
+          keyInsights: [],
           overallSummary: "Unable to generate event summary at this time.",
+          detailedThemes: [],
+          notableQuotes: [],
+          deeperInsights: [],
         });
       }
     } catch (error) {
