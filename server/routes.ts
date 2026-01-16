@@ -185,12 +185,98 @@ export async function registerRoutes(app: Express): Promise<Server> {
       await storage.updateFacilitatorActivity(facilitator.id);
       await storage.updateTable(tableId, { lastActivityAt: new Date() });
 
-      res.json({ success: true });
+      if (!audio || audio.length < 100) {
+        return res.json({ success: true, transcription: null, message: "No audio data" });
+      }
+
+      // Decode base64 audio and transcribe using OpenAI Whisper
+      try {
+        const audioBuffer = Buffer.from(audio, "base64");
+        
+        // Create a file-like object for the OpenAI API
+        const audioBlob = new Blob([audioBuffer], { type: "audio/webm" });
+        const audioFile = new File([audioBlob], "audio.webm", { type: "audio/webm" });
+
+        const transcription = await openai.audio.transcriptions.create({
+          file: audioFile,
+          model: "whisper-1",
+          language: "en",
+        });
+
+        const transcriptText = transcription.text;
+
+        if (transcriptText && transcriptText.trim().length > 0) {
+          // Store the transcript
+          await storage.createTranscript({
+            tableId,
+            content: transcriptText,
+            speakerId: null, // De-identified
+          });
+
+          // Generate or update rolling summary
+          await generateRollingSummary(tableId);
+
+          res.json({ success: true, transcription: transcriptText });
+        } else {
+          res.json({ success: true, transcription: null, message: "No speech detected" });
+        }
+      } catch (transcriptionError) {
+        console.error("Transcription error:", transcriptionError);
+        // Don't fail the request, just return without transcription
+        res.json({ success: true, transcription: null, error: "Transcription failed" });
+      }
     } catch (error) {
       console.error("Error processing audio:", error);
       res.status(500).json({ error: "Failed to process audio" });
     }
   });
+
+  // Helper function to generate rolling summary from all transcripts
+  async function generateRollingSummary(tableId: number) {
+    try {
+      const transcripts = await storage.getTranscriptsByTable(tableId);
+      if (transcripts.length === 0) return;
+
+      const conversationText = transcripts.map((t) => t.content).join("\n\n");
+      
+      const response = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content: `You are an expert facilitator analyzing a roundtable discussion. Summarize the conversation and extract key themes, action items, and open questions.
+
+Return a JSON object with:
+- "summary": a 2-3 sentence summary of the discussion so far
+- "themes": array of 3-5 key themes/topics being discussed
+- "actionItems": array of any action items or next steps mentioned
+- "openQuestions": array of unresolved questions or topics needing more discussion
+
+Keep the summary concise and focused on the most important points.`,
+          },
+          {
+            role: "user",
+            content: conversationText,
+          },
+        ],
+        response_format: { type: "json_object" },
+        max_completion_tokens: 800,
+      });
+
+      const result = JSON.parse(response.choices[0]?.message?.content || "{}");
+
+      // Create or update the summary
+      await storage.createSummary({
+        tableId,
+        content: result.summary || "",
+        themes: result.themes || [],
+        actionItems: result.actionItems || [],
+        openQuestions: result.openQuestions || [],
+      });
+    } catch (error) {
+      console.error("Error generating rolling summary:", error);
+    }
+  }
 
   // Get wrap-up data
   app.get("/api/tables/:id/wrapup", async (req: Request, res: Response) => {
