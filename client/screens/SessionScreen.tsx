@@ -218,7 +218,7 @@ export default function SessionScreen() {
 
     isFlushingRef.current = true;
     try {
-      while (pendingAudioQueueRef.current.length > 0 && connectionStatus !== "offline") {
+      while (pendingAudioQueueRef.current.length > 0 && connectionStatus === "connected") {
         const nextAudio = pendingAudioQueueRef.current[0];
         try {
           await sendAudioMutation.mutateAsync(nextAudio);
@@ -409,7 +409,6 @@ export default function SessionScreen() {
           sampleRate: 44100,
           numberOfChannels: 1,
           bitRate: 128000,
-          isMeteringEnabled: true,
         },
         ios: {
           extension: ".m4a",
@@ -421,7 +420,6 @@ export default function SessionScreen() {
           linearPCMBitDepth: 16,
           linearPCMIsBigEndian: false,
           linearPCMIsFloat: false,
-          isMeteringEnabled: true,
         },
         web: {
           mimeType: "audio/webm",
