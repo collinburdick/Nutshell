@@ -9,6 +9,8 @@ import AdminDashboardScreen from "@/screens/AdminDashboardScreen";
 import EventDetailScreen from "@/screens/EventDetailScreen";
 import SessionDetailScreen from "@/screens/SessionDetailScreen";
 import LiveMonitoringScreen from "@/screens/LiveMonitoringScreen";
+import SessionSummaryScreen from "@/screens/SessionSummaryScreen";
+import EventSummaryScreen from "@/screens/EventSummaryScreen";
 
 export type RootStackParamList = {
   Join: undefined;
@@ -19,6 +21,8 @@ export type RootStackParamList = {
   EventDetail: { eventId: number };
   SessionDetail: { sessionId: number };
   LiveMonitoring: undefined;
+  SessionSummary: { sessionId: number };
+  EventSummary: { eventId: number };
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -80,6 +84,20 @@ export default function RootStackNavigator() {
         name="LiveMonitoring"
         component={LiveMonitoringScreen}
         options={{ headerShown: false }}
+      />
+      <Stack.Screen
+        name="SessionSummary"
+        component={SessionSummaryScreen}
+        options={{
+          headerTitle: "Session Summary",
+        }}
+      />
+      <Stack.Screen
+        name="EventSummary"
+        component={EventSummaryScreen}
+        options={{
+          headerTitle: "Event Summary",
+        }}
       />
     </Stack.Navigator>
   );
