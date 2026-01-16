@@ -11,7 +11,7 @@ import { Feather } from "@expo/vector-icons";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import * as Haptics from "expo-haptics";
 import { useAudioRecorder, RecordingPresets, AudioModule } from "expo-audio";
-import * as FileSystem from "expo-file-system";
+import { File } from "expo-file-system/next";
 import { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useNavigation, useRoute, RouteProp } from "@react-navigation/native";
 import Animated, {
@@ -170,10 +170,9 @@ export default function SessionScreen() {
             console.error("Web audio capture error:", webError);
           }
         } else {
-          // On native, use FileSystem to read as base64
-          const base64 = await FileSystem.readAsStringAsync(uri, {
-            encoding: "base64",
-          });
+          // On native, use new File API to read as base64
+          const file = new File(uri);
+          const base64 = await file.base64();
           if (base64 && base64.length > 100) {
             sendAudioMutation.mutate(base64);
           }
@@ -303,9 +302,8 @@ export default function SessionScreen() {
               };
               reader.readAsDataURL(blob);
             } else {
-              const base64 = await FileSystem.readAsStringAsync(uri, {
-                encoding: "base64",
-              });
+              const file = new File(uri);
+              const base64 = await file.base64();
               if (base64 && base64.length > 100) {
                 sendAudioMutation.mutate(base64);
               }
