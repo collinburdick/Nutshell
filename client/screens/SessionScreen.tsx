@@ -12,7 +12,6 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import * as Haptics from "expo-haptics";
 import { useAudioRecorder, RecordingPresets, AudioModule } from "expo-audio";
 import * as FileSystem from "expo-file-system";
-import { EncodingType } from "expo-file-system";
 import { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useNavigation, useRoute, RouteProp } from "@react-navigation/native";
 import Animated, {
@@ -78,6 +77,7 @@ export default function SessionScreen() {
   const [activeNudge, setActiveNudge] = useState<NudgeData | null>(null);
   const [hasPermission, setHasPermission] = useState(false);
   const [transcriptionStatus, setTranscriptionStatus] = useState<string>("");
+  const [recordingError, setRecordingError] = useState<string | null>(null);
   
   const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const recordingIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -172,7 +172,7 @@ export default function SessionScreen() {
         } else {
           // On native, use FileSystem to read as base64
           const base64 = await FileSystem.readAsStringAsync(uri, {
-            encoding: EncodingType.Base64,
+            encoding: "base64",
           });
           if (base64 && base64.length > 100) {
             sendAudioMutation.mutate(base64);
@@ -205,8 +205,11 @@ export default function SessionScreen() {
 
   const startRecording = async () => {
     try {
+      setRecordingError(null);
+      
       const granted = await requestPermission();
       if (!granted) {
+        setRecordingError("Microphone permission is required to record");
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
         return;
       }
@@ -215,6 +218,14 @@ export default function SessionScreen() {
         allowsRecording: true,
         playsInSilentMode: true,
       });
+
+      // Prepare the recorder first (required for native modules)
+      try {
+        await audioRecorder.prepareToRecordAsync();
+      } catch (prepareError) {
+        console.log("Prepare to record (may be optional):", prepareError);
+        // Some versions don't require this, continue anyway
+      }
 
       audioRecorder.record();
       setIsRecording(true);
@@ -248,6 +259,12 @@ export default function SessionScreen() {
 
     } catch (error) {
       console.error("Failed to start recording:", error);
+      const errorMessage = error instanceof Error ? error.message : "Unknown error";
+      if (errorMessage.includes("NativeSharedObject")) {
+        setRecordingError("Recording not available. Please use the Expo Go app on your device.");
+      } else {
+        setRecordingError("Could not start recording. Please try again.");
+      }
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     }
   };
@@ -287,7 +304,7 @@ export default function SessionScreen() {
               reader.readAsDataURL(blob);
             } else {
               const base64 = await FileSystem.readAsStringAsync(uri, {
-                encoding: FileSystem.EncodingType.Base64,
+                encoding: "base64",
               });
               if (base64 && base64.length > 100) {
                 sendAudioMutation.mutate(base64);
@@ -507,20 +524,30 @@ export default function SessionScreen() {
             </Pressable>
           </View>
         ) : (
-          <Pressable
-            onPress={startRecording}
-            style={({ pressed }) => [
-              styles.startButton,
-              { backgroundColor: theme.link, opacity: pressed ? 0.9 : 1 },
-            ]}
-          >
-            <Animated.View style={[styles.micIconContainer, pulseStyle]}>
-              <Feather name="mic" size={28} color={theme.buttonText} />
-            </Animated.View>
-            <ThemedText type="h4" style={{ color: theme.buttonText }}>
-              Start Recording
-            </ThemedText>
-          </Pressable>
+          <View style={styles.startRecordingContainer}>
+            {recordingError ? (
+              <View style={[styles.errorBanner, { backgroundColor: theme.error + "20" }]}>
+                <Feather name="alert-circle" size={16} color={theme.error} />
+                <ThemedText type="caption" style={{ color: theme.error, flex: 1, marginLeft: Spacing.sm }}>
+                  {recordingError}
+                </ThemedText>
+              </View>
+            ) : null}
+            <Pressable
+              onPress={startRecording}
+              style={({ pressed }) => [
+                styles.startButton,
+                { backgroundColor: theme.link, opacity: pressed ? 0.9 : 1 },
+              ]}
+            >
+              <Animated.View style={[styles.micIconContainer, pulseStyle]}>
+                <Feather name="mic" size={28} color={theme.buttonText} />
+              </Animated.View>
+              <ThemedText type="h4" style={{ color: theme.buttonText }}>
+                Start Recording
+              </ThemedText>
+            </Pressable>
+          </View>
         )}
       </View>
     </ThemedView>
@@ -689,5 +716,14 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     paddingVertical: Spacing.sm,
     paddingHorizontal: Spacing.lg,
+  },
+  startRecordingContainer: {
+    gap: Spacing.md,
+  },
+  errorBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: Spacing.md,
+    borderRadius: BorderRadius.md,
   },
 });
