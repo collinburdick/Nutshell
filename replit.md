@@ -23,7 +23,7 @@ Preferred communication style: Simple, everyday language.
 - **Navigation**: React Navigation with native stack navigator
 - **State Management**: TanStack Query for server state with custom query client
 - **Styling**: Custom theming system with light/dark mode support using a warm amber color palette
-- **Audio**: expo-audio for recording, with custom AudioWorklet for web playback
+- **Audio**: expo-av (Audio.Recording) for native recording, MediaRecorder API for web, with 10-second transcription intervals for near real-time feedback
 - **Key Screens**:
   - `JoinScreen`: 6-character code entry for facilitators
   - `SessionScreen`: Live recording with mic levels, timer, nudge banners

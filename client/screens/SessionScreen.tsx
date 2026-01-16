@@ -10,8 +10,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import * as Haptics from "expo-haptics";
-import { useAudioRecorder, RecordingPresets, AudioModule } from "expo-audio";
-import { File } from "expo-file-system/next";
+import { Audio } from "expo-av";
 import { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useNavigation, useRoute, RouteProp } from "@react-navigation/native";
 import Animated, {
@@ -79,7 +78,9 @@ export default function SessionScreen() {
   const [transcriptionStatus, setTranscriptionStatus] = useState<string>("");
   const [recordingError, setRecordingError] = useState<string | null>(null);
   
-  const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const recordingRef = useRef<Audio.Recording | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
   const recordingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const audioChunkIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const isRecordingRef = useRef(false);
@@ -141,81 +142,151 @@ export default function SessionScreen() {
     },
   });
 
-  // Function to capture audio and send to backend
-  const captureAndSendAudio = useCallback(async () => {
-    if (!audioRecorder.isRecording) {
-      console.log("Recorder not recording, skipping capture");
+  const sendAudioBlob = useCallback(async (blob: Blob) => {
+    if (blob.size < 100) return;
+    
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const base64 = (reader.result as string).split(",")[1];
+      if (base64 && base64.length > 100) {
+        sendAudioMutation.mutate(base64);
+      }
+    };
+    reader.readAsDataURL(blob);
+  }, [sendAudioMutation]);
+
+  const captureAndSendAudioWeb = useCallback(async () => {
+    if (!mediaRecorderRef.current || mediaRecorderRef.current.state !== "recording") {
       return;
     }
 
     try {
-      // Stop current recording to get the audio file
-      await audioRecorder.stop();
+      mediaRecorderRef.current.stop();
       
-      // Small delay to ensure the file is written
       await new Promise(resolve => setTimeout(resolve, 100));
       
-      const uri = audioRecorder.uri;
-
-      if (uri) {
-        if (Platform.OS === "web") {
-          // On web, fetch the blob and convert to base64
-          try {
-            const response = await fetch(uri);
-            const blob = await response.blob();
-            const reader = new FileReader();
-            reader.onloadend = () => {
-              const base64 = (reader.result as string).split(",")[1];
-              if (base64 && base64.length > 100) {
-                sendAudioMutation.mutate(base64);
-              }
-            };
-            reader.readAsDataURL(blob);
-          } catch (webError) {
-            console.error("Web audio capture error:", webError);
-          }
-        } else {
-          // On native, use new File API to read as base64
-          try {
-            const file = new File(uri);
-            const base64 = await file.base64();
-            if (base64 && base64.length > 100) {
-              sendAudioMutation.mutate(base64);
-            }
-          } catch (fileError) {
-            console.error("Native file read error:", fileError);
-          }
-        }
+      if (audioChunksRef.current.length > 0) {
+        const blob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+        audioChunksRef.current = [];
+        sendAudioBlob(blob);
       }
-
-      // Restart recording for next chunk if still in recording mode
+      
       if (isRecordingRef.current) {
-        // Small delay before restarting
-        await new Promise(resolve => setTimeout(resolve, 50));
-        try {
-          audioRecorder.record();
-        } catch (restartError) {
-          console.error("Failed to restart recording:", restartError);
-        }
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const recorder = new MediaRecorder(stream, { mimeType: "audio/webm;codecs=opus" });
+        
+        recorder.ondataavailable = (e) => {
+          if (e.data.size > 0) {
+            audioChunksRef.current.push(e.data);
+          }
+        };
+        
+        mediaRecorderRef.current = recorder;
+        recorder.start(1000);
       }
     } catch (error) {
-      console.error("Error capturing audio:", error);
-      // Try to restart recording
+      console.error("Error capturing web audio:", error);
+    }
+  }, [sendAudioBlob]);
+
+  const captureAndSendAudioNative = useCallback(async () => {
+    if (!recordingRef.current) {
+      return;
+    }
+
+    try {
+      const status = await recordingRef.current.getStatusAsync();
+      if (!status.isRecording) return;
+
+      await recordingRef.current.stopAndUnloadAsync();
+      const uri = recordingRef.current.getURI();
+      
+      if (uri) {
+        const response = await fetch(uri);
+        const blob = await response.blob();
+        sendAudioBlob(blob);
+      }
+      
+      if (isRecordingRef.current) {
+        const newRecording = new Audio.Recording();
+        await newRecording.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
+        await newRecording.startAsync();
+        recordingRef.current = newRecording;
+      }
+    } catch (error) {
+      console.error("Error capturing native audio:", error);
       if (isRecordingRef.current) {
         try {
-          await new Promise(resolve => setTimeout(resolve, 100));
-          audioRecorder.record();
+          const newRecording = new Audio.Recording();
+          await newRecording.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
+          await newRecording.startAsync();
+          recordingRef.current = newRecording;
         } catch (e) {
-          console.error("Failed to restart recording:", e);
+          console.error("Failed to restart native recording:", e);
         }
       }
     }
-  }, [audioRecorder, sendAudioMutation]);
+  }, [sendAudioBlob]);
 
-  const requestPermission = async () => {
-    const status = await AudioModule.requestRecordingPermissionsAsync();
-    setHasPermission(status.granted);
-    return status.granted;
+  const requestPermission = async (): Promise<boolean> => {
+    if (Platform.OS === "web") {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach(track => track.stop());
+        setHasPermission(true);
+        return true;
+      } catch {
+        setHasPermission(false);
+        return false;
+      }
+    } else {
+      const { status } = await Audio.requestPermissionsAsync();
+      const granted = status === "granted";
+      setHasPermission(granted);
+      return granted;
+    }
+  };
+
+  const startRecordingWeb = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream, { mimeType: "audio/webm;codecs=opus" });
+      
+      audioChunksRef.current = [];
+      
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          audioChunksRef.current.push(e.data);
+        }
+      };
+      
+      mediaRecorderRef.current = recorder;
+      recorder.start(1000);
+      
+      return true;
+    } catch (error) {
+      console.error("Failed to start web recording:", error);
+      throw error;
+    }
+  };
+
+  const startRecordingNative = async () => {
+    try {
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+      });
+      
+      const recording = new Audio.Recording();
+      await recording.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
+      await recording.startAsync();
+      
+      recordingRef.current = recording;
+      return true;
+    } catch (error) {
+      console.error("Failed to start native recording:", error);
+      throw error;
+    }
   };
 
   const startRecording = async () => {
@@ -229,22 +300,10 @@ export default function SessionScreen() {
         return;
       }
 
-      // Set audio mode for recording
-      try {
-        await AudioModule.setAudioModeAsync({
-          allowsRecording: true,
-          playsInSilentMode: true,
-        });
-      } catch (modeError) {
-        console.log("Audio mode setup (may be optional on web):", modeError);
-      }
-
-      // Start recording - expo-audio's useAudioRecorder handles preparation internally
-      try {
-        audioRecorder.record();
-      } catch (recordError) {
-        console.error("Initial record call failed:", recordError);
-        throw recordError;
+      if (Platform.OS === "web") {
+        await startRecordingWeb();
+      } else {
+        await startRecordingNative();
       }
 
       setIsRecording(true);
@@ -261,7 +320,6 @@ export default function SessionScreen() {
         true
       );
 
-      // Mic level indicator (simulated for now)
       recordingIntervalRef.current = setInterval(() => {
         if (isRecordingRef.current && !isPaused) {
           const level = Math.random() * 0.5 + 0.3;
@@ -269,27 +327,24 @@ export default function SessionScreen() {
         }
       }, 100);
 
-      // Capture and send audio every 10 seconds for more real-time transcription
       audioChunkIntervalRef.current = setInterval(() => {
         if (isRecordingRef.current && !isPaused) {
-          captureAndSendAudio();
+          if (Platform.OS === "web") {
+            captureAndSendAudioWeb();
+          } else {
+            captureAndSendAudioNative();
+          }
         }
       }, 10000);
 
     } catch (error) {
       console.error("Failed to start recording:", error);
-      const errorMessage = error instanceof Error ? error.message : "Unknown error";
-      if (errorMessage.includes("NativeSharedObject") || errorMessage.includes("FunctionCallException")) {
-        setRecordingError("Recording not available. Please use the Expo Go app on your device.");
-      } else {
-        setRecordingError("Could not start recording. Please try again.");
-      }
+      setRecordingError("Could not start recording. Please try again.");
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     }
   };
 
   const stopRecording = async () => {
-    // Clear intervals first regardless of recording state
     isRecordingRef.current = false;
     
     if (recordingIntervalRef.current) {
@@ -302,45 +357,40 @@ export default function SessionScreen() {
     }
 
     try {
-      // Stop recording and capture final audio
-      if (audioRecorder.isRecording) {
-        await audioRecorder.stop();
-        
-        // Small delay to ensure file is written
-        await new Promise(resolve => setTimeout(resolve, 100));
-        
-        const uri = audioRecorder.uri;
-
-        // Send the final audio chunk
-        if (uri) {
-          try {
-            if (Platform.OS === "web") {
+      if (Platform.OS === "web") {
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
+          mediaRecorderRef.current.stop();
+          
+          await new Promise(resolve => setTimeout(resolve, 100));
+          
+          if (audioChunksRef.current.length > 0) {
+            const blob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+            audioChunksRef.current = [];
+            sendAudioBlob(blob);
+          }
+          
+          mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
+          mediaRecorderRef.current = null;
+        }
+      } else {
+        if (recordingRef.current) {
+          const status = await recordingRef.current.getStatusAsync();
+          if (status.isRecording) {
+            await recordingRef.current.stopAndUnloadAsync();
+            const uri = recordingRef.current.getURI();
+            
+            if (uri) {
               const response = await fetch(uri);
               const blob = await response.blob();
-              const reader = new FileReader();
-              reader.onloadend = () => {
-                const base64 = (reader.result as string).split(",")[1];
-                if (base64 && base64.length > 100) {
-                  sendAudioMutation.mutate(base64);
-                }
-              };
-              reader.readAsDataURL(blob);
-            } else {
-              const file = new File(uri);
-              const base64 = await file.base64();
-              if (base64 && base64.length > 100) {
-                sendAudioMutation.mutate(base64);
-              }
+              sendAudioBlob(blob);
             }
-          } catch (readError) {
-            console.error("Error reading final audio:", readError);
           }
+          recordingRef.current = null;
         }
       }
     } catch (error) {
       console.error("Failed to stop recording:", error);
     } finally {
-      // Always update UI state
       setIsRecording(false);
       setMicLevel(0);
       pulseAnim.value = 1;
@@ -348,11 +398,25 @@ export default function SessionScreen() {
     }
   };
 
-  const togglePause = () => {
-    if (isPaused) {
-      audioRecorder.record();
+  const togglePause = async () => {
+    if (Platform.OS === "web") {
+      if (isPaused) {
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state === "paused") {
+          mediaRecorderRef.current.resume();
+        }
+      } else {
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
+          mediaRecorderRef.current.pause();
+        }
+      }
     } else {
-      audioRecorder.pause();
+      if (recordingRef.current) {
+        if (isPaused) {
+          await recordingRef.current.startAsync();
+        } else {
+          await recordingRef.current.pauseAsync();
+        }
+      }
     }
     setIsPaused(!isPaused);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -370,9 +434,22 @@ export default function SessionScreen() {
   useEffect(() => {
     return () => {
       isRecordingRef.current = false;
-      if (audioRecorder.isRecording) {
-        audioRecorder.stop();
+      
+      if (Platform.OS === "web") {
+        if (mediaRecorderRef.current) {
+          try {
+            mediaRecorderRef.current.stop();
+            mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
+          } catch {}
+        }
+      } else {
+        if (recordingRef.current) {
+          try {
+            recordingRef.current.stopAndUnloadAsync();
+          } catch {}
+        }
       }
+      
       if (recordingIntervalRef.current) {
         clearInterval(recordingIntervalRef.current);
       }
@@ -398,175 +475,135 @@ export default function SessionScreen() {
           onDismiss={() => acknowledgeNudgeMutation.mutate(activeNudge.id)}
         />
       ) : null}
-
-      <View style={[styles.header, { paddingTop: insets.top + Spacing.md }]}>
-        <View style={styles.headerTop}>
-          <View style={styles.tableInfo}>
-            <ThemedText type="caption" style={{ color: theme.textMuted }}>
-              TABLE {tableData?.tableNumber}
+      
+      <ScrollView
+        style={styles.scrollView}
+        contentContainerStyle={[
+          styles.scrollContent,
+          { paddingTop: insets.top + Spacing.md, paddingBottom: insets.bottom + 120 }
+        ]}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.header}>
+          <View style={styles.headerTop}>
+            <ThemedText type="caption" style={{ color: theme.textSecondary }}>
+              TABLE {tableData?.tableNumber || 1}
             </ThemedText>
-            <ThemedText type="h4" numberOfLines={1}>
-              {tableData?.sessionName || "Session"}
-            </ThemedText>
+            <ConnectionStatus status={connectionStatus} />
           </View>
-          <ConnectionStatus status={connectionStatus} />
+          <ThemedText type="h2">{tableData?.sessionName || "Session"}</ThemedText>
         </View>
 
-        <View style={styles.timerRow}>
+        <View style={styles.statusBar}>
           <SessionTimer startTime={sessionStartTime} isActive={isRecording && !isPaused} />
           <MicLevelIndicator level={micLevel} isActive={isRecording && !isPaused} />
         </View>
-      </View>
 
-      <ScrollView
-        style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}
-      >
-        {tableData?.topic ? (
-          <View style={[styles.topicCard, { backgroundColor: theme.backgroundDefault }]}>
-            <View style={styles.topicHeader}>
-              <Feather name="message-circle" size={18} color={theme.link} />
-              <ThemedText type="small" style={{ color: theme.textSecondary, fontWeight: "600" }}>
-                DISCUSSION TOPIC
-              </ThemedText>
-            </View>
-            <ThemedText type="h4" style={styles.topicText}>
-              {tableData.topic}
+        <View style={[styles.card, { backgroundColor: theme.backgroundSecondary }]}>
+          <View style={styles.cardHeader}>
+            <Feather name="message-circle" size={18} color={theme.accent} />
+            <ThemedText type="h4" style={{ marginLeft: Spacing.sm }}>
+              DISCUSSION TOPIC
             </ThemedText>
           </View>
-        ) : null}
+          <ThemedText type="body" style={{ marginTop: Spacing.sm }}>
+            {tableData?.topic || "No topic assigned"}
+          </ThemedText>
+        </View>
 
         {tableData?.discussionGuide && tableData.discussionGuide.length > 0 ? (
-          <View style={[styles.guideCard, { backgroundColor: theme.backgroundDefault }]}>
-            <View style={styles.guideHeader}>
-              <Feather name="list" size={18} color={theme.link} />
-              <ThemedText type="small" style={{ color: theme.textSecondary, fontWeight: "600" }}>
+          <View style={[styles.card, { backgroundColor: theme.backgroundSecondary }]}>
+            <View style={styles.cardHeader}>
+              <Feather name="list" size={18} color={theme.accent} />
+              <ThemedText type="h4" style={{ marginLeft: Spacing.sm }}>
                 DISCUSSION GUIDE
               </ThemedText>
             </View>
-            {tableData.discussionGuide.map((prompt, index) => (
+            {tableData.discussionGuide.map((item, index) => (
               <View key={index} style={styles.guideItem}>
-                <View style={[styles.guideNumber, { backgroundColor: theme.link }]}>
-                  <ThemedText type="caption" style={{ color: theme.buttonText, fontWeight: "700" }}>
+                <View style={[styles.guideNumber, { backgroundColor: theme.accent }]}>
+                  <ThemedText type="caption" style={{ color: theme.buttonText }}>
                     {index + 1}
                   </ThemedText>
                 </View>
-                <ThemedText type="body" style={{ flex: 1 }}>
-                  {prompt}
+                <ThemedText type="body" style={{ flex: 1, marginLeft: Spacing.sm }}>
+                  {item}
                 </ThemedText>
               </View>
             ))}
           </View>
         ) : null}
 
-        <View style={[styles.summaryCard, { backgroundColor: theme.backgroundDefault }]}>
-          <View style={styles.summaryHeader}>
-            <Feather name="zap" size={18} color={theme.link} />
-            <ThemedText type="small" style={{ color: theme.textSecondary, fontWeight: "600" }}>
+        <View style={[styles.card, { backgroundColor: theme.backgroundSecondary }]}>
+          <View style={styles.cardHeader}>
+            <Feather name="zap" size={18} color={theme.accent} />
+            <ThemedText type="h4" style={{ marginLeft: Spacing.sm }}>
               LIVE SUMMARY
             </ThemedText>
-            {isRecording ? (
-              <View style={styles.liveIndicator}>
-                <View style={[styles.liveDot, { backgroundColor: theme.success }]} />
-                <ThemedText type="caption" style={{ color: theme.success }}>
-                  LIVE
-                </ThemedText>
-              </View>
-            ) : null}
           </View>
-
-          {summaryData?.content ? (
-            <>
-              <ThemedText type="body" style={styles.summaryContent}>
-                {summaryData.content}
-              </ThemedText>
-
-              {summaryData.themes && summaryData.themes.length > 0 ? (
-                <View style={styles.themesContainer}>
-                  <ThemedText type="caption" style={{ color: theme.textMuted, marginBottom: Spacing.xs }}>
-                    Key Themes
-                  </ThemedText>
-                  <View style={styles.themesList}>
-                    {summaryData.themes.map((themeItem, index) => (
-                      <View key={index} style={[styles.themeTag, { backgroundColor: theme.backgroundSecondary }]}>
-                        <ThemedText type="caption">{themeItem}</ThemedText>
-                      </View>
-                    ))}
-                  </View>
-                </View>
-              ) : null}
-            </>
-          ) : (
-            <View style={styles.emptySummary}>
-              <Feather name="mic" size={32} color={theme.textMuted} />
-              <ThemedText type="body" style={{ color: theme.textMuted, textAlign: "center" }}>
-                {isRecording
-                  ? "Listening... Summary will appear shortly"
-                  : "Start recording to generate live summary"}
+          {recordingError ? (
+            <View style={[styles.errorBanner, { backgroundColor: theme.error + "20" }]}>
+              <Feather name="alert-circle" size={16} color={theme.error} />
+              <ThemedText type="body" style={{ color: theme.error, marginLeft: Spacing.xs, flex: 1 }}>
+                {recordingError}
               </ThemedText>
             </View>
-          )}
+          ) : null}
+          {transcriptionStatus ? (
+            <ThemedText type="caption" style={{ color: theme.accent, marginTop: Spacing.xs }}>
+              {transcriptionStatus}
+            </ThemedText>
+          ) : null}
+          <ThemedText type="body" style={{ marginTop: Spacing.sm, color: theme.textSecondary }}>
+            {summaryData?.content || "Start recording to see live insights..."}
+          </ThemedText>
+          {summaryData?.themes && summaryData.themes.length > 0 ? (
+            <View style={styles.themesContainer}>
+              {summaryData.themes.map((t, i) => (
+                <View key={i} style={[styles.themeTag, { backgroundColor: theme.accent + "20" }]}>
+                  <ThemedText type="caption" style={{ color: theme.accent }}>
+                    {t}
+                  </ThemedText>
+                </View>
+              ))}
+            </View>
+          ) : null}
         </View>
       </ScrollView>
 
-      {transcriptionStatus ? (
-        <View style={[styles.transcriptionStatus, { backgroundColor: theme.backgroundSecondary }]}>
-          <Feather name="activity" size={14} color={theme.textSecondary} />
-          <ThemedText type="caption" style={{ color: theme.textSecondary, marginLeft: Spacing.xs }}>
-            {transcriptionStatus}
-          </ThemedText>
-        </View>
-      ) : null}
-
-      <View style={[styles.controls, { paddingBottom: insets.bottom + Spacing.lg }]}>
-        {isRecording ? (
+      <View style={[styles.bottomControls, { paddingBottom: insets.bottom + Spacing.md }]}>
+        {!isRecording ? (
+          <Pressable
+            style={[styles.recordButton, { backgroundColor: theme.accent }]}
+            onPress={startRecording}
+          >
+            <Animated.View style={[styles.micIconContainer, pulseStyle]}>
+              <Feather name="mic" size={28} color={theme.buttonText} />
+            </Animated.View>
+            <ThemedText type="h4" style={{ color: theme.buttonText }}>
+              Start Recording
+            </ThemedText>
+          </Pressable>
+        ) : (
           <View style={styles.recordingControls}>
             <Pressable
+              style={[styles.controlButton, { backgroundColor: theme.backgroundSecondary }]}
               onPress={togglePause}
-              style={({ pressed }) => [
-                styles.controlButton,
-                { backgroundColor: theme.backgroundSecondary, opacity: pressed ? 0.8 : 1 },
-              ]}
             >
-              <Feather name={isPaused ? "play" : "pause"} size={24} color={theme.text} />
+              <Feather
+                name={isPaused ? "play" : "pause"}
+                size={24}
+                color={theme.text}
+              />
             </Pressable>
-
+            
             <Pressable
+              style={[styles.endButton, { backgroundColor: theme.error }]}
               onPress={handleEndSession}
-              style={({ pressed }) => [
-                styles.endButton,
-                { backgroundColor: theme.error, opacity: pressed ? 0.9 : 1 },
-              ]}
             >
               <Feather name="square" size={20} color={theme.buttonText} />
-              <ThemedText type="body" style={{ color: theme.buttonText, fontWeight: "600" }}>
+              <ThemedText type="body" style={{ color: theme.buttonText, marginLeft: Spacing.xs }}>
                 End Session
-              </ThemedText>
-            </Pressable>
-          </View>
-        ) : (
-          <View style={styles.startRecordingContainer}>
-            {recordingError ? (
-              <View style={[styles.errorBanner, { backgroundColor: theme.error + "20" }]}>
-                <Feather name="alert-circle" size={16} color={theme.error} />
-                <ThemedText type="caption" style={{ color: theme.error, flex: 1, marginLeft: Spacing.sm }}>
-                  {recordingError}
-                </ThemedText>
-              </View>
-            ) : null}
-            <Pressable
-              onPress={startRecording}
-              style={({ pressed }) => [
-                styles.startButton,
-                { backgroundColor: theme.link, opacity: pressed ? 0.9 : 1 },
-              ]}
-            >
-              <Animated.View style={[styles.micIconContainer, pulseStyle]}>
-                <Feather name="mic" size={28} color={theme.buttonText} />
-              </Animated.View>
-              <ThemedText type="h4" style={{ color: theme.buttonText }}>
-                Start Recording
               </ThemedText>
             </Pressable>
           </View>
@@ -582,101 +619,56 @@ const styles = StyleSheet.create({
   },
   loadingContainer: {
     flex: 1,
-    alignItems: "center",
     justifyContent: "center",
-  },
-  header: {
-    paddingHorizontal: Spacing.lg,
-    paddingBottom: Spacing.md,
-  },
-  headerTop: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "flex-start",
-    marginBottom: Spacing.md,
-  },
-  tableInfo: {
-    flex: 1,
-  },
-  timerRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "center",
   },
   scrollView: {
     flex: 1,
   },
   scrollContent: {
-    padding: Spacing.lg,
-    gap: Spacing.lg,
+    paddingHorizontal: Spacing.lg,
   },
-  topicCard: {
-    borderRadius: BorderRadius.lg,
-    padding: Spacing.lg,
-  },
-  topicHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: Spacing.sm,
-    marginBottom: Spacing.md,
-  },
-  topicText: {
-    lineHeight: 28,
-  },
-  guideCard: {
-    borderRadius: BorderRadius.lg,
-    padding: Spacing.lg,
-  },
-  guideHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: Spacing.sm,
+  header: {
     marginBottom: Spacing.lg,
+  },
+  headerTop: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: Spacing.xs,
+  },
+  statusBar: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: Spacing.lg,
+  },
+  card: {
+    padding: Spacing.lg,
+    borderRadius: BorderRadius.lg,
+    marginBottom: Spacing.md,
+    ...Shadows.sm,
+  },
+  cardHeader: {
+    flexDirection: "row",
+    alignItems: "center",
   },
   guideItem: {
     flexDirection: "row",
     alignItems: "flex-start",
-    gap: Spacing.md,
-    marginBottom: Spacing.md,
+    marginTop: Spacing.md,
   },
   guideNumber: {
     width: 24,
     height: 24,
     borderRadius: 12,
-    alignItems: "center",
     justifyContent: "center",
-  },
-  summaryCard: {
-    borderRadius: BorderRadius.lg,
-    padding: Spacing.lg,
-    minHeight: 200,
-  },
-  summaryHeader: {
-    flexDirection: "row",
     alignItems: "center",
-    gap: Spacing.sm,
-    marginBottom: Spacing.lg,
-  },
-  liveIndicator: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: Spacing.xs,
-    marginLeft: "auto",
-  },
-  liveDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-  },
-  summaryContent: {
-    lineHeight: 26,
   },
   themesContainer: {
-    marginTop: Spacing.lg,
-  },
-  themesList: {
     flexDirection: "row",
     flexWrap: "wrap",
+    marginTop: Spacing.md,
     gap: Spacing.xs,
   },
   themeTag: {
@@ -684,68 +676,55 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.xs,
     borderRadius: BorderRadius.sm,
   },
-  emptySummary: {
-    flex: 1,
+  errorBanner: {
+    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
-    gap: Spacing.md,
-    paddingVertical: Spacing["3xl"],
+    padding: Spacing.sm,
+    borderRadius: BorderRadius.sm,
+    marginTop: Spacing.sm,
   },
-  controls: {
+  bottomControls: {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    right: 0,
     paddingHorizontal: Spacing.lg,
     paddingTop: Spacing.md,
   },
+  recordButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: Spacing.lg,
+    borderRadius: BorderRadius.lg,
+    gap: Spacing.sm,
+  },
+  micIconContainer: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    justifyContent: "center",
+    alignItems: "center",
+  },
   recordingControls: {
     flexDirection: "row",
+    alignItems: "center",
     gap: Spacing.md,
   },
   controlButton: {
     width: 56,
     height: 56,
-    borderRadius: BorderRadius.lg,
-    alignItems: "center",
+    borderRadius: 28,
     justifyContent: "center",
+    alignItems: "center",
+    ...Shadows.sm,
   },
   endButton: {
     flex: 1,
-    height: 56,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: Spacing.lg,
     borderRadius: BorderRadius.lg,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: Spacing.sm,
-  },
-  startButton: {
-    height: Spacing.buttonHeightLarge,
-    borderRadius: BorderRadius.xl,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: Spacing.md,
-    ...Shadows.lg,
-  },
-  micIconContainer: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: "rgba(255,255,255,0.2)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  transcriptionStatus: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: Spacing.sm,
-    paddingHorizontal: Spacing.lg,
-  },
-  startRecordingContainer: {
-    gap: Spacing.md,
-  },
-  errorBanner: {
-    flexDirection: "row",
-    alignItems: "center",
-    padding: Spacing.md,
-    borderRadius: BorderRadius.md,
   },
 });
