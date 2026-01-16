@@ -5,6 +5,7 @@ import {
   ScrollView,
   Pressable,
   RefreshControl,
+  TextInput,
   StatusBar,
   ActivityIndicator,
 } from "react-native";
@@ -35,17 +36,78 @@ interface SessionSummary {
   overallSummary: string;
 }
 
+interface ThemeWithFrequency {
+  theme: string;
+  frequency: number;
+  prevalence: "High" | "Medium" | "Low";
+}
+
+interface DetailedTheme {
+  theme: string;
+  description: string;
+  keyPoints: string[];
+  sessions?: string[];
+}
+
+interface DeeperInsight {
+  insight: string;
+  analysis: string;
+  recommendation?: string;
+}
+
 interface AggregatedEventSummary {
   eventName: string;
   description: string | null;
-  overallSummary: string;
-  aggregatedThemes: string[];
-  aggregatedActionItems: string[];
-  aggregatedOpenQuestions: string[];
   sessionSummaries: SessionSummary[];
+  totalSessions: number;
+  totalTables: number;
+  themesWithFrequency: ThemeWithFrequency[];
+  keyQuestions: string[];
+  keyInsights: string[];
+  overallSummary: string;
+  detailedThemes: DetailedTheme[];
+  notableQuotes: string[];
+  deeperInsights: DeeperInsight[];
 }
 
 type ViewMode = "present" | "explore";
+
+type CollapsibleSection = 
+  | "aiSummary" 
+  | "discussionThemes" 
+  | "keyInsights" 
+  | "keyQuestions" 
+  | "detailedThemes" 
+  | "notableQuotes" 
+  | "aiAnalysis" 
+  | "sessionSummaries";
+
+interface PrevalenceBadgeProps {
+  prevalence: "High" | "Medium" | "Low";
+}
+
+function PrevalenceBadge({ prevalence }: PrevalenceBadgeProps) {
+  const getColors = () => {
+    switch (prevalence) {
+      case "High":
+        return { bg: "#D97706", text: "#FFFFFF" };
+      case "Medium":
+        return { bg: "#F97316", text: "#FFFFFF" };
+      case "Low":
+        return { bg: "#6B7280", text: "#FFFFFF" };
+    }
+  };
+
+  const colors = getColors();
+
+  return (
+    <View style={[styles.prevalenceBadge, { backgroundColor: colors.bg }]}>
+      <ThemedText type="caption" style={{ color: colors.text, fontWeight: "600", fontSize: 10 }}>
+        {prevalence}
+      </ThemedText>
+    </View>
+  );
+}
 
 export default function EventSummaryScreen() {
   const insets = useSafeAreaInsets();
@@ -57,10 +119,28 @@ export default function EventSummaryScreen() {
   const [viewMode, setViewMode] = useState<ViewMode>("present");
   const [darkPresentation, setDarkPresentation] = useState(true);
   const [expandedSessions, setExpandedSessions] = useState<Set<number>>(new Set());
+  const [expandedDetailedThemes, setExpandedDetailedThemes] = useState<Set<string>>(new Set());
+  const [expandedSections, setExpandedSections] = useState<Set<CollapsibleSection>>(
+    new Set(["aiSummary", "discussionThemes", "keyInsights", "keyQuestions"])
+  );
+  const [searchQuery, setSearchQuery] = useState("");
 
   const { data: summary, isLoading, refetch, isError } = useQuery<AggregatedEventSummary>({
     queryKey: ["/api/events", eventId, "aggregated-summary"],
   });
+
+  const toggleSection = (section: CollapsibleSection) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setExpandedSections((prev) => {
+      const next = new Set(prev);
+      if (next.has(section)) {
+        next.delete(section);
+      } else {
+        next.add(section);
+      }
+      return next;
+    });
+  };
 
   const toggleSession = (sessionId: number) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -75,27 +155,39 @@ export default function EventSummaryScreen() {
     });
   };
 
+  const toggleDetailedTheme = (themeName: string) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setExpandedDetailedThemes((prev) => {
+      const next = new Set(prev);
+      if (next.has(themeName)) {
+        next.delete(themeName);
+      } else {
+        next.add(themeName);
+      }
+      return next;
+    });
+  };
+
   const copyToClipboard = async (text: string) => {
     await Clipboard.setStringAsync(text);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
   };
 
-  const copyAllActionItems = async () => {
-    if (summary?.aggregatedActionItems) {
-      const text = summary.aggregatedActionItems.map((item, i) => `${i + 1}. ${item}`).join("\n");
+  const copyAllInsights = async () => {
+    if (summary?.keyInsights) {
+      const text = summary.keyInsights.map((item, i) => `${i + 1}. ${item}`).join("\n");
       await copyToClipboard(text);
     }
   };
+
+  const filteredThemes = summary?.themesWithFrequency?.filter((t) =>
+    t.theme.toLowerCase().includes(searchQuery.toLowerCase())
+  ) || [];
 
   const presentBg = darkPresentation ? "#0A0A0A" : theme.backgroundRoot;
   const presentText = darkPresentation ? "#FFFFFF" : theme.text;
   const presentMuted = darkPresentation ? "#888888" : theme.textMuted;
   const amber = "#D97706";
-
-  const getCommonThemes = () => {
-    if (!summary?.aggregatedThemes) return [];
-    return summary.aggregatedThemes;
-  };
 
   if (isLoading) {
     return (
@@ -130,6 +222,37 @@ export default function EventSummaryScreen() {
       </ThemedView>
     );
   }
+
+  const renderCollapsibleHeader = (
+    title: string, 
+    section: CollapsibleSection, 
+    icon: keyof typeof Feather.glyphMap,
+    count?: number
+  ) => (
+    <Pressable
+      onPress={() => toggleSection(section)}
+      style={styles.collapsibleHeader}
+    >
+      <View style={styles.collapsibleHeaderLeft}>
+        <Feather name={icon} size={18} color={amber} />
+        <ThemedText type="h4" style={{ marginLeft: Spacing.sm }}>
+          {title}
+        </ThemedText>
+        {count !== undefined && count > 0 ? (
+          <View style={[styles.countBadge, { backgroundColor: amber + "20" }]}>
+            <ThemedText type="caption" style={{ color: amber, fontWeight: "600" }}>
+              {count}
+            </ThemedText>
+          </View>
+        ) : null}
+      </View>
+      <Feather
+        name={expandedSections.has(section) ? "chevron-up" : "chevron-down"}
+        size={20}
+        color={theme.textMuted}
+      />
+    </Pressable>
+  );
 
   return (
     <View style={[styles.container, viewMode === "present" ? { backgroundColor: presentBg } : { backgroundColor: theme.backgroundRoot }]}>
@@ -209,38 +332,56 @@ export default function EventSummaryScreen() {
               </ThemedText>
             ) : null}
 
+            <View style={styles.statsRow}>
+              <View style={[styles.statBadge, { backgroundColor: amber + "20" }]}>
+                <Feather name="layers" size={16} color={amber} />
+                <ThemedText type="body" style={{ color: amber, fontWeight: "600", marginLeft: Spacing.xs }}>
+                  {summary.totalSessions} session{summary.totalSessions !== 1 ? "s" : ""}
+                </ThemedText>
+              </View>
+              <View style={[styles.statBadge, { backgroundColor: amber + "20" }]}>
+                <Feather name="grid" size={16} color={amber} />
+                <ThemedText type="body" style={{ color: amber, fontWeight: "600", marginLeft: Spacing.xs }}>
+                  {summary.totalTables} table{summary.totalTables !== 1 ? "s" : ""}
+                </ThemedText>
+              </View>
+            </View>
+
             <View style={styles.presentSection}>
               <ThemedText type="h4" style={[styles.presentSectionTitle, { color: amber }]}>
-                Event Summary
+                AI Summary
               </ThemedText>
               <ThemedText type="body" style={[styles.presentSummaryText, { color: presentText }]}>
                 {summary.overallSummary || "No summary available yet."}
               </ThemedText>
             </View>
 
-            {summary.aggregatedThemes && summary.aggregatedThemes.length > 0 ? (
+            {summary.themesWithFrequency && summary.themesWithFrequency.length > 0 ? (
               <View style={styles.presentSection}>
                 <ThemedText type="h4" style={[styles.presentSectionTitle, { color: amber }]}>
-                  Top Themes
+                  Key Themes
                 </ThemedText>
                 <View style={styles.presentThemes}>
-                  {summary.aggregatedThemes.slice(0, 6).map((themeText, idx) => (
+                  {summary.themesWithFrequency.slice(0, 6).map((themeItem, idx) => (
                     <View key={idx} style={[styles.presentThemeBadge, { backgroundColor: amber + "20", borderColor: amber }]}>
-                      <ThemedText type="body" style={{ color: amber, fontWeight: "600" }}>
-                        {themeText}
-                      </ThemedText>
+                      <View style={styles.themeWithPrevalence}>
+                        <ThemedText type="body" style={{ color: amber, fontWeight: "600" }}>
+                          {themeItem.theme}
+                        </ThemedText>
+                        <PrevalenceBadge prevalence={themeItem.prevalence} />
+                      </View>
                     </View>
                   ))}
                 </View>
               </View>
             ) : null}
 
-            {summary.aggregatedActionItems && summary.aggregatedActionItems.length > 0 ? (
+            {summary.keyInsights && summary.keyInsights.length > 0 ? (
               <View style={styles.presentSection}>
                 <ThemedText type="h4" style={[styles.presentSectionTitle, { color: amber }]}>
-                  Key Action Items
+                  Key Insights
                 </ThemedText>
-                {summary.aggregatedActionItems.map((item, index) => (
+                {summary.keyInsights.map((item, index) => (
                   <View key={index} style={styles.presentActionItem}>
                     <ThemedText type="h3" style={{ color: amber, width: 40 }}>
                       {index + 1}.
@@ -253,160 +394,342 @@ export default function EventSummaryScreen() {
               </View>
             ) : null}
 
-            <View style={styles.presentSection}>
-              <ThemedText type="h4" style={[styles.presentSectionTitle, { color: amber }]}>
-                Sessions Covered
-              </ThemedText>
-              <ThemedText type="body" style={{ color: presentMuted, fontSize: 18 }}>
-                {(summary.sessionSummaries || []).length} session{(summary.sessionSummaries || []).length !== 1 ? "s" : ""} analyzed
-              </ThemedText>
-            </View>
+            {summary.keyQuestions && summary.keyQuestions.length > 0 ? (
+              <View style={styles.presentSection}>
+                <ThemedText type="h4" style={[styles.presentSectionTitle, { color: amber }]}>
+                  Key Questions
+                </ThemedText>
+                {summary.keyQuestions.map((question, index) => (
+                  <View key={index} style={styles.presentQuestionItem}>
+                    <Feather name="help-circle" size={20} color={presentMuted} style={{ marginRight: Spacing.sm }} />
+                    <ThemedText type="body" style={[styles.presentActionText, { color: presentText }]}>
+                      {question}
+                    </ThemedText>
+                  </View>
+                ))}
+              </View>
+            ) : null}
           </View>
         ) : (
           <View style={styles.exploreContent}>
-            <View style={[styles.exploreCard, { backgroundColor: theme.backgroundDefault }]}>
-              <ThemedText type="h4" style={{ color: amber }}>Event Overview</ThemedText>
-              <ThemedText type="body" style={{ color: theme.textSecondary, marginTop: Spacing.sm }}>
-                {summary.overallSummary || "No summary available yet."}
-              </ThemedText>
+            <View style={[styles.searchContainer, { backgroundColor: theme.backgroundSecondary }]}>
+              <Feather name="search" size={18} color={theme.textMuted} />
+              <TextInput
+                style={[styles.searchInput, { color: theme.text }]}
+                placeholder="Search themes..."
+                placeholderTextColor={theme.textMuted}
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+              />
+              {searchQuery.length > 0 ? (
+                <Pressable onPress={() => setSearchQuery("")}>
+                  <Feather name="x" size={18} color={theme.textMuted} />
+                </Pressable>
+              ) : null}
             </View>
 
-            {getCommonThemes().length > 0 ? (
-              <View style={[styles.exploreCard, { backgroundColor: theme.backgroundDefault }]}>
-                <ThemedText type="h4" style={{ marginBottom: Spacing.md }}>
-                  Key Themes
-                </ThemedText>
-                <ThemedText type="caption" style={{ color: theme.textMuted, marginBottom: Spacing.md }}>
-                  Themes identified across the event
-                </ThemedText>
-                {getCommonThemes().map((themeText, idx) => (
-                  <View key={idx} style={styles.commonThemeItem}>
-                    <View style={[styles.themeBadge, { backgroundColor: amber + "20" }]}>
-                      <ThemedText type="caption" style={{ color: amber, fontWeight: "600" }}>
-                        {themeText}
-                      </ThemedText>
-                    </View>
-                  </View>
-                ))}
-              </View>
-            ) : null}
-
-            {summary.aggregatedActionItems && summary.aggregatedActionItems.length > 0 ? (
-              <View style={[styles.exploreCard, { backgroundColor: theme.backgroundDefault }]}>
-                <View style={styles.cardHeader}>
-                  <ThemedText type="h4">Key Action Items</ThemedText>
-                  <Pressable onPress={copyAllActionItems} style={styles.copyButton}>
-                    <Feather name="copy" size={16} color={amber} />
-                    <ThemedText type="caption" style={{ color: amber }}>Copy All</ThemedText>
-                  </Pressable>
-                </View>
-                {summary.aggregatedActionItems.map((item, index) => (
-                  <Pressable
-                    key={index}
-                    onPress={() => copyToClipboard(item)}
-                    style={styles.actionItem}
-                  >
-                    <ThemedText type="body" style={{ color: amber, fontWeight: "600", marginRight: Spacing.sm }}>
-                      {index + 1}.
-                    </ThemedText>
-                    <ThemedText type="body" style={{ flex: 1, color: theme.text }}>
-                      {item}
-                    </ThemedText>
-                    <Feather name="copy" size={14} color={theme.textMuted} />
-                  </Pressable>
-                ))}
-              </View>
-            ) : null}
-
             <View style={[styles.exploreCard, { backgroundColor: theme.backgroundDefault }]}>
-              <ThemedText type="h4" style={{ marginBottom: Spacing.md }}>
-                Session Breakdown ({(summary.sessionSummaries || []).length})
-              </ThemedText>
-              {(summary.sessionSummaries || []).map((session) => (
-                <Pressable
-                  key={session.sessionId}
-                  onPress={() => toggleSession(session.sessionId)}
-                  style={[styles.sessionSection, { borderColor: theme.border }]}
-                >
-                  <View style={styles.sessionSectionHeader}>
-                    <View style={styles.sessionInfo}>
-                      <Feather name="layers" size={18} color={amber} />
-                      <View style={{ flex: 1 }}>
-                        <ThemedText type="body" style={{ fontWeight: "600" }}>
-                          {session.sessionName}
-                        </ThemedText>
-                        {session.topic ? (
-                          <ThemedText type="caption" style={{ color: theme.textMuted }} numberOfLines={1}>
-                            {session.topic}
-                          </ThemedText>
-                        ) : null}
-                      </View>
-                    </View>
-                    <Feather
-                      name={expandedSessions.has(session.sessionId) ? "chevron-up" : "chevron-down"}
-                      size={20}
-                      color={theme.textMuted}
-                    />
-                  </View>
-                  {expandedSessions.has(session.sessionId) ? (
-                    <View style={styles.sessionSectionContent}>
-                      <ThemedText type="body" style={{ color: theme.textSecondary }}>
-                        {session.overallSummary || "No summary available."}
-                      </ThemedText>
+              {renderCollapsibleHeader("AI Summary", "aiSummary", "cpu")}
+              {expandedSections.has("aiSummary") ? (
+                <ThemedText type="body" style={{ color: theme.textSecondary, marginTop: Spacing.sm }}>
+                  {summary.overallSummary || "No summary available yet."}
+                </ThemedText>
+              ) : null}
+            </View>
 
-                      {session.aggregatedThemes && session.aggregatedThemes.length > 0 ? (
-                        <View style={styles.sessionThemesSection}>
-                          <ThemedText type="caption" style={{ color: theme.textMuted, marginBottom: Spacing.xs }}>
-                            Themes
-                          </ThemedText>
-                          <View style={styles.sessionThemes}>
-                            {session.aggregatedThemes.map((t, idx) => (
-                              <View key={idx} style={[styles.smallBadge, { backgroundColor: amber + "15" }]}>
-                                <ThemedText type="caption" style={{ color: amber }}>
-                                  {t}
-                                </ThemedText>
-                              </View>
-                            ))}
+            {(filteredThemes.length > 0 || summary.themesWithFrequency?.length > 0) ? (
+              <View style={[styles.exploreCard, { backgroundColor: theme.backgroundDefault }]}>
+                {renderCollapsibleHeader("Discussion Themes", "discussionThemes", "hash", filteredThemes.length || summary.themesWithFrequency?.length)}
+                {expandedSections.has("discussionThemes") ? (
+                  <View style={{ marginTop: Spacing.md }}>
+                    {(searchQuery ? filteredThemes : summary.themesWithFrequency)?.map((themeItem, idx) => (
+                      <View key={idx} style={styles.themeItem}>
+                        <View style={styles.themeHeader}>
+                          <View style={[styles.themeBadge, { backgroundColor: amber + "20" }]}>
+                            <ThemedText type="caption" style={{ color: amber, fontWeight: "600" }}>
+                              {themeItem.theme}
+                            </ThemedText>
+                          </View>
+                          <View style={styles.themeMetaContainer}>
+                            <View style={styles.frequencyBadge}>
+                              <Feather name="repeat" size={12} color={theme.textMuted} />
+                              <ThemedText type="caption" style={{ color: theme.textMuted, marginLeft: 4 }}>
+                                {themeItem.frequency}
+                              </ThemedText>
+                            </View>
+                            <PrevalenceBadge prevalence={themeItem.prevalence} />
                           </View>
                         </View>
-                      ) : null}
+                      </View>
+                    ))}
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
 
-                      {session.aggregatedActionItems && session.aggregatedActionItems.length > 0 ? (
-                        <View style={styles.sessionActionsSection}>
-                          <ThemedText type="caption" style={{ color: theme.textMuted, marginBottom: Spacing.xs }}>
-                            Action Items
-                          </ThemedText>
-                          {session.aggregatedActionItems.map((item, idx) => (
-                            <View key={idx} style={styles.sessionActionItem}>
-                              <ThemedText type="caption" style={{ color: amber }}>•</ThemedText>
-                              <ThemedText type="small" style={{ flex: 1, color: theme.text }}>
-                                {item}
-                              </ThemedText>
-                            </View>
-                          ))}
-                        </View>
-                      ) : null}
-
-                      {session.aggregatedOpenQuestions && session.aggregatedOpenQuestions.length > 0 ? (
-                        <View style={styles.sessionQuestionsSection}>
-                          <ThemedText type="caption" style={{ color: theme.textMuted, marginBottom: Spacing.xs }}>
-                            Open Questions
-                          </ThemedText>
-                          {session.aggregatedOpenQuestions.map((q, idx) => (
-                            <View key={idx} style={styles.sessionQuestionItem}>
-                              <Feather name="help-circle" size={12} color={theme.textMuted} />
-                              <ThemedText type="small" style={{ flex: 1, color: theme.textSecondary }}>
-                                {q}
-                              </ThemedText>
-                            </View>
-                          ))}
-                        </View>
-                      ) : null}
+            {summary.keyInsights && summary.keyInsights.length > 0 ? (
+              <View style={[styles.exploreCard, { backgroundColor: theme.backgroundDefault }]}>
+                {renderCollapsibleHeader("Key Insights", "keyInsights", "zap", summary.keyInsights.length)}
+                {expandedSections.has("keyInsights") ? (
+                  <View style={{ marginTop: Spacing.md }}>
+                    <View style={styles.cardHeader}>
+                      <View />
+                      <Pressable onPress={copyAllInsights} style={styles.copyButton}>
+                        <Feather name="copy" size={16} color={amber} />
+                        <ThemedText type="caption" style={{ color: amber }}>Copy All</ThemedText>
+                      </Pressable>
                     </View>
-                  ) : null}
-                </Pressable>
-              ))}
-            </View>
+                    {summary.keyInsights.map((item, index) => (
+                      <Pressable
+                        key={index}
+                        onPress={() => copyToClipboard(item)}
+                        style={styles.insightItem}
+                      >
+                        <Feather name="zap" size={16} color={amber} style={{ marginRight: Spacing.sm }} />
+                        <ThemedText type="body" style={{ flex: 1, color: theme.text }}>
+                          {item}
+                        </ThemedText>
+                        <Feather name="copy" size={14} color={theme.textMuted} />
+                      </Pressable>
+                    ))}
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
+
+            {summary.keyQuestions && summary.keyQuestions.length > 0 ? (
+              <View style={[styles.exploreCard, { backgroundColor: theme.backgroundDefault }]}>
+                {renderCollapsibleHeader("Key Questions", "keyQuestions", "help-circle", summary.keyQuestions.length)}
+                {expandedSections.has("keyQuestions") ? (
+                  <View style={{ marginTop: Spacing.md }}>
+                    {summary.keyQuestions.map((question, index) => (
+                      <View key={index} style={styles.questionItem}>
+                        <Feather name="help-circle" size={16} color={theme.textMuted} />
+                        <ThemedText type="body" style={{ flex: 1, color: theme.text }}>
+                          {question}
+                        </ThemedText>
+                      </View>
+                    ))}
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
+
+            {summary.detailedThemes && summary.detailedThemes.length > 0 ? (
+              <View style={[styles.exploreCard, { backgroundColor: theme.backgroundDefault }]}>
+                {renderCollapsibleHeader("Key Themes & Discussion Points", "detailedThemes", "layers", summary.detailedThemes.length)}
+                {expandedSections.has("detailedThemes") ? (
+                  <View style={{ marginTop: Spacing.md }}>
+                    {summary.detailedThemes.map((detailedTheme, idx) => (
+                      <Pressable
+                        key={idx}
+                        onPress={() => toggleDetailedTheme(detailedTheme.theme)}
+                        style={[styles.detailedThemeItem, { borderColor: theme.border }]}
+                      >
+                        <View style={styles.detailedThemeHeader}>
+                          <View style={[styles.themeBadge, { backgroundColor: amber + "20" }]}>
+                            <ThemedText type="caption" style={{ color: amber, fontWeight: "600" }}>
+                              {detailedTheme.theme}
+                            </ThemedText>
+                          </View>
+                          <Feather
+                            name={expandedDetailedThemes.has(detailedTheme.theme) ? "chevron-up" : "chevron-down"}
+                            size={18}
+                            color={theme.textMuted}
+                          />
+                        </View>
+                        {expandedDetailedThemes.has(detailedTheme.theme) ? (
+                          <View style={styles.detailedThemeContent}>
+                            <ThemedText type="body" style={{ color: theme.textSecondary, marginBottom: Spacing.sm }}>
+                              {detailedTheme.description}
+                            </ThemedText>
+                            {detailedTheme.keyPoints && detailedTheme.keyPoints.length > 0 ? (
+                              <View style={styles.keyPointsList}>
+                                <ThemedText type="caption" style={{ color: theme.textMuted, marginBottom: Spacing.xs, fontWeight: "600" }}>
+                                  Key Points:
+                                </ThemedText>
+                                {detailedTheme.keyPoints.map((point, pointIdx) => (
+                                  <View key={pointIdx} style={styles.keyPointItem}>
+                                    <View style={[styles.bulletPoint, { backgroundColor: amber }]} />
+                                    <ThemedText type="small" style={{ flex: 1, color: theme.text }}>
+                                      {point}
+                                    </ThemedText>
+                                  </View>
+                                ))}
+                              </View>
+                            ) : null}
+                            {detailedTheme.sessions && detailedTheme.sessions.length > 0 ? (
+                              <View style={styles.sessionsSection}>
+                                <ThemedText type="caption" style={{ color: theme.textMuted, marginBottom: Spacing.xs, fontWeight: "600" }}>
+                                  Mentioned in:
+                                </ThemedText>
+                                <View style={styles.sessionTags}>
+                                  {detailedTheme.sessions.map((session, sessionIdx) => (
+                                    <View key={sessionIdx} style={[styles.sessionTag, { backgroundColor: theme.backgroundSecondary }]}>
+                                      <ThemedText type="caption" style={{ color: theme.textSecondary }}>
+                                        {session}
+                                      </ThemedText>
+                                    </View>
+                                  ))}
+                                </View>
+                              </View>
+                            ) : null}
+                          </View>
+                        ) : null}
+                      </Pressable>
+                    ))}
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
+
+            {summary.notableQuotes && summary.notableQuotes.length > 0 ? (
+              <View style={[styles.exploreCard, { backgroundColor: theme.backgroundDefault }]}>
+                {renderCollapsibleHeader("Notable Quotes", "notableQuotes", "message-circle", summary.notableQuotes.length)}
+                {expandedSections.has("notableQuotes") ? (
+                  <View style={{ marginTop: Spacing.md }}>
+                    {summary.notableQuotes.map((quote, index) => (
+                      <Pressable
+                        key={index}
+                        onPress={() => copyToClipboard(quote)}
+                        style={styles.quoteItem}
+                      >
+                        <Feather name="message-circle" size={16} color={amber} style={{ marginTop: 2 }} />
+                        <ThemedText type="body" style={[styles.quoteText, { color: theme.text }]}>
+                          "{quote}"
+                        </ThemedText>
+                        <Feather name="copy" size={14} color={theme.textMuted} />
+                      </Pressable>
+                    ))}
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
+
+            {summary.deeperInsights && summary.deeperInsights.length > 0 ? (
+              <View style={[styles.exploreCard, { backgroundColor: theme.backgroundDefault }]}>
+                {renderCollapsibleHeader("AI Analysis", "aiAnalysis", "compass", summary.deeperInsights.length)}
+                {expandedSections.has("aiAnalysis") ? (
+                  <View style={{ marginTop: Spacing.md }}>
+                    {summary.deeperInsights.map((deeperInsight, index) => (
+                      <View key={index} style={[styles.deeperInsightItem, { borderColor: theme.border }]}>
+                        <View style={styles.deeperInsightHeader}>
+                          <Feather name="compass" size={18} color={amber} />
+                          <ThemedText type="body" style={{ flex: 1, fontWeight: "600", marginLeft: Spacing.sm, color: theme.text }}>
+                            {deeperInsight.insight}
+                          </ThemedText>
+                        </View>
+                        <ThemedText type="small" style={{ color: theme.textSecondary, marginTop: Spacing.sm }}>
+                          {deeperInsight.analysis}
+                        </ThemedText>
+                        {deeperInsight.recommendation ? (
+                          <View style={[styles.recommendationBox, { backgroundColor: amber + "15" }]}>
+                            <Feather name="check-circle" size={14} color={amber} />
+                            <ThemedText type="small" style={{ flex: 1, color: amber, marginLeft: Spacing.xs }}>
+                              {deeperInsight.recommendation}
+                            </ThemedText>
+                          </View>
+                        ) : null}
+                      </View>
+                    ))}
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
+
+            {summary.sessionSummaries && summary.sessionSummaries.length > 0 ? (
+              <View style={[styles.exploreCard, { backgroundColor: theme.backgroundDefault }]}>
+                {renderCollapsibleHeader("Session Summaries", "sessionSummaries", "grid", summary.sessionSummaries.length)}
+                {expandedSections.has("sessionSummaries") ? (
+                  <View style={{ marginTop: Spacing.md }}>
+                    {summary.sessionSummaries.map((session) => (
+                      <Pressable
+                        key={session.sessionId}
+                        onPress={() => toggleSession(session.sessionId)}
+                        style={[styles.sessionSection, { borderColor: theme.border }]}
+                      >
+                        <View style={styles.sessionSectionHeader}>
+                          <View style={styles.sessionInfo}>
+                            <Feather name="layers" size={18} color={amber} />
+                            <View style={{ flex: 1 }}>
+                              <ThemedText type="body" style={{ fontWeight: "600" }}>
+                                {session.sessionName}
+                              </ThemedText>
+                              {session.topic ? (
+                                <ThemedText type="caption" style={{ color: theme.textMuted }} numberOfLines={1}>
+                                  {session.topic}
+                                </ThemedText>
+                              ) : null}
+                            </View>
+                          </View>
+                          <Feather
+                            name={expandedSessions.has(session.sessionId) ? "chevron-up" : "chevron-down"}
+                            size={20}
+                            color={theme.textMuted}
+                          />
+                        </View>
+                        {expandedSessions.has(session.sessionId) ? (
+                          <View style={styles.sessionSectionContent}>
+                            <ThemedText type="body" style={{ color: theme.textSecondary }}>
+                              {session.overallSummary || "No summary available."}
+                            </ThemedText>
+
+                            {session.aggregatedThemes && session.aggregatedThemes.length > 0 ? (
+                              <View style={styles.sessionThemesSection}>
+                                <ThemedText type="caption" style={{ color: theme.textMuted, marginBottom: Spacing.xs }}>
+                                  Themes
+                                </ThemedText>
+                                <View style={styles.sessionThemes}>
+                                  {session.aggregatedThemes.map((t, idx) => (
+                                    <View key={idx} style={[styles.smallBadge, { backgroundColor: amber + "15" }]}>
+                                      <ThemedText type="caption" style={{ color: amber }}>
+                                        {t}
+                                      </ThemedText>
+                                    </View>
+                                  ))}
+                                </View>
+                              </View>
+                            ) : null}
+
+                            {session.aggregatedActionItems && session.aggregatedActionItems.length > 0 ? (
+                              <View style={styles.sessionActionsSection}>
+                                <ThemedText type="caption" style={{ color: theme.textMuted, marginBottom: Spacing.xs }}>
+                                  Action Items
+                                </ThemedText>
+                                {session.aggregatedActionItems.map((item, idx) => (
+                                  <View key={idx} style={styles.sessionActionItem}>
+                                    <ThemedText type="caption" style={{ color: amber }}>•</ThemedText>
+                                    <ThemedText type="small" style={{ flex: 1, color: theme.text }}>
+                                      {item}
+                                    </ThemedText>
+                                  </View>
+                                ))}
+                              </View>
+                            ) : null}
+
+                            {session.aggregatedOpenQuestions && session.aggregatedOpenQuestions.length > 0 ? (
+                              <View style={styles.sessionQuestionsSection}>
+                                <ThemedText type="caption" style={{ color: theme.textMuted, marginBottom: Spacing.xs }}>
+                                  Open Questions
+                                </ThemedText>
+                                {session.aggregatedOpenQuestions.map((q, idx) => (
+                                  <View key={idx} style={styles.sessionQuestionItem}>
+                                    <Feather name="help-circle" size={12} color={theme.textMuted} />
+                                    <ThemedText type="small" style={{ flex: 1, color: theme.textSecondary }}>
+                                      {q}
+                                    </ThemedText>
+                                  </View>
+                                ))}
+                              </View>
+                            ) : null}
+                          </View>
+                        ) : null}
+                      </Pressable>
+                    ))}
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
           </View>
         )}
       </ScrollView>
@@ -476,6 +799,18 @@ const styles = StyleSheet.create({
     textAlign: "center",
     fontSize: 20,
   },
+  statsRow: {
+    flexDirection: "row",
+    justifyContent: "center",
+    gap: Spacing.md,
+  },
+  statBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    borderRadius: BorderRadius.md,
+  },
   presentSection: {
     marginTop: Spacing.lg,
   },
@@ -498,7 +833,16 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.md,
     borderRadius: BorderRadius.lg,
     borderWidth: 1,
+  },
+  themeWithPrevalence: {
+    flexDirection: "row",
     alignItems: "center",
+    gap: Spacing.sm,
+  },
+  prevalenceBadge: {
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 2,
+    borderRadius: BorderRadius.xs,
   },
   presentActionItem: {
     flexDirection: "row",
@@ -509,12 +853,44 @@ const styles = StyleSheet.create({
     fontSize: 20,
     lineHeight: 30,
   },
+  presentQuestionItem: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    marginBottom: Spacing.md,
+  },
   exploreContent: {
     gap: Spacing.md,
+  },
+  searchContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: Spacing.md,
+    height: 48,
+    borderRadius: BorderRadius.md,
+    gap: Spacing.sm,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 16,
   },
   exploreCard: {
     padding: Spacing.lg,
     borderRadius: BorderRadius.lg,
+  },
+  collapsibleHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  collapsibleHeaderLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  countBadge: {
+    marginLeft: Spacing.sm,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 2,
+    borderRadius: BorderRadius.xs,
   },
   cardHeader: {
     flexDirection: "row",
@@ -527,21 +903,106 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: Spacing.xs,
   },
-  commonThemeItem: {
+  themeItem: {
+    marginBottom: Spacing.md,
+  },
+  themeHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: Spacing.sm,
   },
   themeBadge: {
     paddingHorizontal: Spacing.md,
     paddingVertical: Spacing.xs,
     borderRadius: BorderRadius.sm,
   },
-  actionItem: {
+  themeMetaContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.sm,
+  },
+  frequencyBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  insightItem: {
     flexDirection: "row",
     alignItems: "flex-start",
     paddingVertical: Spacing.sm,
+  },
+  questionItem: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: Spacing.sm,
+    marginBottom: Spacing.sm,
+  },
+  detailedThemeItem: {
+    borderTopWidth: 1,
+    paddingTop: Spacing.md,
+    marginTop: Spacing.sm,
+  },
+  detailedThemeHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  detailedThemeContent: {
+    marginTop: Spacing.md,
+    paddingLeft: Spacing.sm,
+  },
+  keyPointsList: {
+    marginTop: Spacing.sm,
+  },
+  keyPointItem: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    marginBottom: Spacing.xs,
+    gap: Spacing.sm,
+  },
+  bulletPoint: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    marginTop: 7,
+  },
+  sessionsSection: {
+    marginTop: Spacing.md,
+  },
+  sessionTags: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: Spacing.xs,
+  },
+  sessionTag: {
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: Spacing.xs,
+    borderRadius: BorderRadius.xs,
+  },
+  quoteItem: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: Spacing.sm,
+    paddingVertical: Spacing.sm,
+  },
+  quoteText: {
+    flex: 1,
+    fontStyle: "italic",
+  },
+  deeperInsightItem: {
+    borderTopWidth: 1,
+    paddingTop: Spacing.md,
+    marginTop: Spacing.sm,
+  },
+  deeperInsightHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+  },
+  recommendationBox: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    marginTop: Spacing.sm,
+    padding: Spacing.sm,
+    borderRadius: BorderRadius.sm,
   },
   sessionSection: {
     borderTopWidth: 1,
