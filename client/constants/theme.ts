@@ -1,30 +1,59 @@
 import { Platform } from "react-native";
 
-const tintColorLight = "#007AFF";
-const tintColorDark = "#0A84FF";
+// Nutshell brand colors - warm amber/brown palette
+const primaryAmber = "#D97706";
+const primaryAmberDark = "#F59E0B";
 
 export const Colors = {
   light: {
-    text: "#11181C",
+    text: "#1C1917",
+    textSecondary: "#57534E",
+    textMuted: "#A8A29E",
     buttonText: "#FFFFFF",
-    tabIconDefault: "#687076",
-    tabIconSelected: tintColorLight,
-    link: "#007AFF",
-    backgroundRoot: "#FFFFFF", // Elevation 0
-    backgroundDefault: "#F2F2F2", // Elevation 1
-    backgroundSecondary: "#E6E6E6", // Elevation 2
-    backgroundTertiary: "#D9D9D9", // Elevation 3
+    tabIconDefault: "#78716C",
+    tabIconSelected: primaryAmber,
+    link: primaryAmber,
+    backgroundRoot: "#FFFBEB",
+    backgroundDefault: "#FEF3C7",
+    backgroundSecondary: "#FDE68A",
+    backgroundTertiary: "#FCD34D",
+    success: "#059669",
+    warning: "#D97706",
+    error: "#DC2626",
+    info: "#0284C7",
+    border: "#E7E5E4",
+    cardBorder: "rgba(217, 119, 6, 0.2)",
+    accent: "#F97316",
+    micActive: "#059669",
+    micInactive: "#78716C",
+    connectionGood: "#059669",
+    connectionDegraded: "#D97706",
+    connectionOffline: "#DC2626",
   },
   dark: {
-    text: "#ECEDEE",
+    text: "#FAFAF9",
+    textSecondary: "#D6D3D1",
+    textMuted: "#78716C",
     buttonText: "#FFFFFF",
-    tabIconDefault: "#9BA1A6",
-    tabIconSelected: tintColorDark,
-    link: "#0A84FF",
-    backgroundRoot: "#1F2123", // Elevation 0
-    backgroundDefault: "#2A2C2E", // Elevation 1
-    backgroundSecondary: "#353739", // Elevation 2
-    backgroundTertiary: "#404244", // Elevation 3
+    tabIconDefault: "#A8A29E",
+    tabIconSelected: primaryAmberDark,
+    link: primaryAmberDark,
+    backgroundRoot: "#1C1917",
+    backgroundDefault: "#292524",
+    backgroundSecondary: "#44403C",
+    backgroundTertiary: "#57534E",
+    success: "#10B981",
+    warning: "#F59E0B",
+    error: "#EF4444",
+    info: "#38BDF8",
+    border: "#44403C",
+    cardBorder: "rgba(245, 158, 11, 0.3)",
+    accent: "#FB923C",
+    micActive: "#10B981",
+    micInactive: "#A8A29E",
+    connectionGood: "#10B981",
+    connectionDegraded: "#F59E0B",
+    connectionOffline: "#EF4444",
   },
 };
 
@@ -38,68 +67,73 @@ export const Spacing = {
   "3xl": 32,
   "4xl": 40,
   "5xl": 48,
-  inputHeight: 48,
-  buttonHeight: 52,
+  "6xl": 64,
+  inputHeight: 52,
+  buttonHeight: 56,
+  buttonHeightLarge: 72,
 };
 
 export const BorderRadius = {
   xs: 8,
   sm: 12,
-  md: 18,
-  lg: 24,
-  xl: 30,
-  "2xl": 40,
-  "3xl": 50,
+  md: 16,
+  lg: 20,
+  xl: 24,
+  "2xl": 32,
+  "3xl": 40,
   full: 9999,
 };
 
 export const Typography = {
   h1: {
-    fontSize: 32,
-    lineHeight: 40,
+    fontSize: 34,
+    lineHeight: 42,
     fontWeight: "700" as const,
+    letterSpacing: -0.5,
   },
   h2: {
     fontSize: 28,
     lineHeight: 36,
     fontWeight: "700" as const,
+    letterSpacing: -0.3,
   },
   h3: {
-    fontSize: 24,
-    lineHeight: 32,
+    fontSize: 22,
+    lineHeight: 30,
     fontWeight: "600" as const,
   },
   h4: {
-    fontSize: 20,
-    lineHeight: 28,
+    fontSize: 18,
+    lineHeight: 26,
     fontWeight: "600" as const,
   },
   body: {
-    fontSize: 16,
-    lineHeight: 24,
+    fontSize: 17,
+    lineHeight: 26,
     fontWeight: "400" as const,
   },
   small: {
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: 15,
+    lineHeight: 22,
+    fontWeight: "400" as const,
+  },
+  caption: {
+    fontSize: 13,
+    lineHeight: 18,
     fontWeight: "400" as const,
   },
   link: {
-    fontSize: 16,
-    lineHeight: 24,
-    fontWeight: "400" as const,
+    fontSize: 17,
+    lineHeight: 26,
+    fontWeight: "500" as const,
   },
 };
 
 export const Fonts = Platform.select({
   ios: {
-    /** iOS `UIFontDescriptorSystemDesignDefault` */
     sans: "system-ui",
-    /** iOS `UIFontDescriptorSystemDesignSerif` */
     serif: "ui-serif",
-    /** iOS `UIFontDescriptorSystemDesignRounded` */
     rounded: "ui-rounded",
-    /** iOS `UIFontDescriptorSystemDesignMonospaced` */
     mono: "ui-monospace",
   },
   default: {
@@ -111,8 +145,31 @@ export const Fonts = Platform.select({
   web: {
     sans: "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
     serif: "Georgia, 'Times New Roman', serif",
-    rounded:
-      "'SF Pro Rounded', 'Hiragino Maru Gothic ProN', Meiryo, 'MS PGothic', sans-serif",
+    rounded: "'SF Pro Rounded', 'Hiragino Maru Gothic ProN', Meiryo, 'MS PGothic', sans-serif",
     mono: "SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
   },
 });
+
+export const Shadows = {
+  sm: {
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+  md: {
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  lg: {
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.12,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+};

@@ -1,12 +1,14 @@
 import React from "react";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
-import MainTabNavigator from "@/navigation/MainTabNavigator";
-import ModalScreen from "@/screens/ModalScreen";
 import { useScreenOptions } from "@/hooks/useScreenOptions";
+import JoinScreen from "@/screens/JoinScreen";
+import SessionScreen from "@/screens/SessionScreen";
+import WrapUpScreen from "@/screens/WrapUpScreen";
 
 export type RootStackParamList = {
-  Main: undefined;
-  Modal: undefined;
+  Join: undefined;
+  Session: { tableId: number; token: string };
+  WrapUp: { tableId: number; token: string };
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -17,16 +19,24 @@ export default function RootStackNavigator() {
   return (
     <Stack.Navigator screenOptions={screenOptions}>
       <Stack.Screen
-        name="Main"
-        component={MainTabNavigator}
+        name="Join"
+        component={JoinScreen}
         options={{ headerShown: false }}
       />
       <Stack.Screen
-        name="Modal"
-        component={ModalScreen}
+        name="Session"
+        component={SessionScreen}
+        options={{ 
+          headerShown: false,
+          gestureEnabled: false,
+        }}
+      />
+      <Stack.Screen
+        name="WrapUp"
+        component={WrapUpScreen}
         options={{
-          presentation: "modal",
-          headerTitle: "Modal",
+          headerTitle: "Session Wrap-up",
+          gestureEnabled: false,
         }}
       />
     </Stack.Navigator>
