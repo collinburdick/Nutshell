@@ -61,6 +61,9 @@ export interface IStorage {
   getPendingNudges(tableId: number): Promise<Nudge[]>;
   createNudge(data: InsertNudge): Promise<Nudge>;
   acknowledgeNudge(id: number): Promise<void>;
+
+  // Admin
+  getAllActiveTables(): Promise<Array<Table & { sessionName: string; eventName: string }>>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -206,6 +209,29 @@ export class DatabaseStorage implements IStorage {
 
   async acknowledgeNudge(id: number): Promise<void> {
     await db.update(nudges).set({ acknowledgedAt: sql`CURRENT_TIMESTAMP` }).where(eq(nudges.id, id));
+  }
+
+  // Admin
+  async getAllActiveTables(): Promise<Array<Table & { sessionName: string; eventName: string }>> {
+    const result = await db
+      .select({
+        id: tables.id,
+        sessionId: tables.sessionId,
+        tableNumber: tables.tableNumber,
+        topic: tables.topic,
+        joinCode: tables.joinCode,
+        status: tables.status,
+        lastActivityAt: tables.lastActivityAt,
+        createdAt: tables.createdAt,
+        sessionName: sessions.name,
+        eventName: events.name,
+      })
+      .from(tables)
+      .innerJoin(sessions, eq(tables.sessionId, sessions.id))
+      .innerJoin(events, eq(sessions.eventId, events.id))
+      .where(eq(tables.status, "active"))
+      .orderBy(desc(tables.lastActivityAt));
+    return result;
   }
 }
 

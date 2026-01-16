@@ -192,6 +192,15 @@ export default function JoinScreen() {
         <ThemedText type="caption" style={{ color: theme.textMuted, textAlign: "center" }}>
           By joining, you consent to session recording and AI-powered summarization
         </ThemedText>
+        <Pressable
+          onPress={() => navigation.navigate("AdminLogin")}
+          style={styles.adminLink}
+        >
+          <Feather name="settings" size={14} color={theme.textMuted} />
+          <ThemedText type="caption" style={{ color: theme.textMuted }}>
+            Admin Login
+          </ThemedText>
+        </Pressable>
       </View>
     </ThemedView>
   );
@@ -284,5 +293,13 @@ const styles = StyleSheet.create({
   },
   footer: {
     paddingHorizontal: Spacing.xl,
+  },
+  adminLink: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: Spacing.xs,
+    marginTop: Spacing.lg,
+    paddingVertical: Spacing.sm,
   },
 });

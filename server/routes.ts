@@ -2,13 +2,68 @@ import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "node:http";
 import OpenAI from "openai";
 import { storage } from "./storage";
+import crypto from "crypto";
 
 const openai = new OpenAI({
   apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
   baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
 });
 
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "nutshell2026";
+const adminTokens = new Map<string, { createdAt: Date }>();
+
+function generateAdminToken(): string {
+  return crypto.randomBytes(32).toString("hex");
+}
+
+function validateAdminToken(token: string): boolean {
+  const session = adminTokens.get(token);
+  if (!session) return false;
+  const hoursSinceCreation = (Date.now() - session.createdAt.getTime()) / (1000 * 60 * 60);
+  if (hoursSinceCreation > 24) {
+    adminTokens.delete(token);
+    return false;
+  }
+  return true;
+}
+
 export async function registerRoutes(app: Express): Promise<Server> {
+  // Admin authentication
+  app.post("/api/admin/login", async (req: Request, res: Response) => {
+    try {
+      const { password } = req.body;
+      if (password !== ADMIN_PASSWORD) {
+        return res.status(401).json({ error: "Invalid password" });
+      }
+      const token = generateAdminToken();
+      adminTokens.set(token, { createdAt: new Date() });
+      res.json({ token });
+    } catch (error) {
+      console.error("Admin login error:", error);
+      res.status(500).json({ error: "Login failed" });
+    }
+  });
+
+  app.post("/api/admin/verify", async (req: Request, res: Response) => {
+    try {
+      const { token } = req.body;
+      const valid = validateAdminToken(token);
+      res.json({ valid });
+    } catch (error) {
+      res.status(500).json({ error: "Verification failed" });
+    }
+  });
+
+  app.post("/api/admin/logout", async (req: Request, res: Response) => {
+    try {
+      const { token } = req.body;
+      adminTokens.delete(token);
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: "Logout failed" });
+    }
+  });
+
   // Join session with code
   app.post("/api/join", async (req: Request, res: Response) => {
     try {
@@ -299,6 +354,67 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error creating nudge:", error);
       res.status(500).json({ error: "Failed to create nudge" });
+    }
+  });
+
+  // Get single event
+  app.get("/api/events/:id", async (req: Request, res: Response) => {
+    try {
+      const eventId = parseInt(req.params.id);
+      const event = await storage.getEvent(eventId);
+      if (!event) {
+        return res.status(404).json({ error: "Event not found" });
+      }
+      res.json(event);
+    } catch (error) {
+      console.error("Error fetching event:", error);
+      res.status(500).json({ error: "Failed to fetch event" });
+    }
+  });
+
+  // Get single session
+  app.get("/api/sessions/:id", async (req: Request, res: Response) => {
+    try {
+      const sessionId = parseInt(req.params.id);
+      const session = await storage.getSession(sessionId);
+      if (!session) {
+        return res.status(404).json({ error: "Session not found" });
+      }
+      res.json(session);
+    } catch (error) {
+      console.error("Error fetching session:", error);
+      res.status(500).json({ error: "Failed to fetch session" });
+    }
+  });
+
+  // Admin monitoring - get all active tables across all events
+  app.get("/api/admin/active-tables", async (req: Request, res: Response) => {
+    try {
+      const activeTables = await storage.getAllActiveTables();
+      res.json(activeTables);
+    } catch (error) {
+      console.error("Error fetching active tables:", error);
+      res.status(500).json({ error: "Failed to fetch active tables" });
+    }
+  });
+
+  // Broadcast nudge to all tables in a session
+  app.post("/api/sessions/:id/broadcast-nudge", async (req: Request, res: Response) => {
+    try {
+      const sessionId = parseInt(req.params.id);
+      const { type, message, priority } = req.body;
+      const tables = await storage.getTablesBySession(sessionId);
+      
+      const nudges = await Promise.all(
+        tables.map(table => 
+          storage.createNudge({ tableId: table.id, sessionId, type, message, priority })
+        )
+      );
+      
+      res.status(201).json({ count: nudges.length, nudges });
+    } catch (error) {
+      console.error("Error broadcasting nudge:", error);
+      res.status(500).json({ error: "Failed to broadcast nudge" });
     }
   });
 
