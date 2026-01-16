@@ -138,6 +138,11 @@ export default function SessionScreen() {
         return;
       }
 
+      await AudioModule.setAudioModeAsync({
+        allowsRecording: true,
+        playsInSilentMode: true,
+      });
+
       audioRecorder.record();
       setIsRecording(true);
       setSessionStartTime(new Date());
