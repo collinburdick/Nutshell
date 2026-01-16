@@ -211,7 +211,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           await storage.createTranscript({
             tableId,
             content: transcriptText,
-            speakerId: null, // De-identified
+            speakerTag: null, // De-identified
           });
 
           // Generate or update rolling summary
