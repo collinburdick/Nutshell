@@ -458,10 +458,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
           sessionName: session.name,
           topic: session.topic,
           tableSummaries,
-          aggregatedThemes: [],
-          aggregatedActionItems: [],
-          aggregatedOpenQuestions: [],
+          totalTables: 0,
+          themesWithFrequency: [],
+          keyQuestions: [],
+          keyInsights: [],
           overallSummary: "No discussion summaries available yet.",
+          detailedThemes: [],
+          notableQuotes: [],
+          deeperInsights: [],
         });
       }
 
@@ -474,26 +478,46 @@ export async function registerRoutes(app: Express): Promise<Server> {
       ).join('\n\n');
 
       try {
+        const totalTables = summariesWithContent.length;
         const response = await openai.chat.completions.create({
           model: "gpt-4o-mini",
           messages: [
             {
               role: "system",
-              content: `You are an expert facilitator synthesizing insights from multiple roundtable discussions within a session. Analyze the summaries from different tables and create an aggregated view.
+              content: `You are an expert facilitator synthesizing insights from ${totalTables} roundtable discussions. Analyze the summaries and create a comprehensive aggregated view.
 
-Return a JSON object with:
-- "aggregatedThemes": array of 3-5 key themes that emerged across tables
-- "aggregatedActionItems": array of 3-5 consolidated action items
-- "aggregatedOpenQuestions": array of 3-5 unresolved questions
-- "overallSummary": a 2-3 sentence synthesis of the session's key insights`,
+Return a JSON object with these fields:
+
+1. "themesWithFrequency": array of objects with:
+   - "theme": the theme name
+   - "frequency": how many tables mentioned this (number)
+   - "prevalence": "High" (>60%), "Medium" (30-60%), or "Low" (<30%)
+   
+2. "keyQuestions": array of 3-5 most important unanswered questions that emerged
+
+3. "keyInsights": array of 4-6 key insights or takeaways from the discussions
+
+4. "overallSummary": a 3-4 sentence executive summary of the session
+
+5. "detailedThemes": array of objects with:
+   - "theme": theme name
+   - "description": 2-3 sentence detailed explanation of this theme
+   - "keyPoints": array of 2-3 specific points discussed under this theme
+
+6. "notableQuotes": array of 3-5 interesting or impactful statements/ideas that were discussed (paraphrased for privacy)
+
+7. "deeperInsights": array of 2-3 objects with:
+   - "insight": a deeper analytical observation
+   - "analysis": 2-3 sentence AI analysis explaining why this matters or what it implies
+   - "recommendation": optional actionable suggestion based on this insight`,
             },
             {
               role: "user",
-              content: `Session: ${session.name}\nTopic: ${session.topic || 'General Discussion'}\n\nTable Summaries:\n${summaryText}`,
+              content: `Session: ${session.name}\nTopic: ${session.topic || 'General Discussion'}\nTotal Tables: ${totalTables}\n\nTable Summaries:\n${summaryText}`,
             },
           ],
           response_format: { type: "json_object" },
-          max_completion_tokens: 1000,
+          max_completion_tokens: 2500,
         });
 
         const result = JSON.parse(response.choices[0]?.message?.content || "{}");
@@ -502,10 +526,14 @@ Return a JSON object with:
           sessionName: session.name,
           topic: session.topic,
           tableSummaries,
-          aggregatedThemes: result.aggregatedThemes || [],
-          aggregatedActionItems: result.aggregatedActionItems || [],
-          aggregatedOpenQuestions: result.aggregatedOpenQuestions || [],
+          totalTables,
+          themesWithFrequency: result.themesWithFrequency || [],
+          keyQuestions: result.keyQuestions || [],
+          keyInsights: result.keyInsights || [],
           overallSummary: result.overallSummary || "Summary generation complete.",
+          detailedThemes: result.detailedThemes || [],
+          notableQuotes: result.notableQuotes || [],
+          deeperInsights: result.deeperInsights || [],
         });
       } catch (aiError) {
         console.error("AI aggregation error:", aiError);
@@ -513,10 +541,14 @@ Return a JSON object with:
           sessionName: session.name,
           topic: session.topic,
           tableSummaries,
-          aggregatedThemes: [],
-          aggregatedActionItems: [],
-          aggregatedOpenQuestions: [],
+          totalTables: summariesWithContent.length,
+          themesWithFrequency: [],
+          keyQuestions: [],
+          keyInsights: [],
           overallSummary: "Unable to generate aggregated summary at this time.",
+          detailedThemes: [],
+          notableQuotes: [],
+          deeperInsights: [],
         });
       }
     } catch (error) {
