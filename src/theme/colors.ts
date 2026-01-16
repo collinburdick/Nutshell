@@ -1,0 +1,57 @@
+import { palette } from "./tokens";
+
+const baseColors = {
+  ink: palette.ink,
+  paper: palette.paper,
+  canvas: palette.canvas,
+  border: palette.border,
+  mutedText: palette.mutedText,
+  navy: palette.navy,
+  blue: palette.blue,
+  bluePressed: palette.bluePressed,
+  blueTint: palette.blueTint,
+  teal: palette.teal,
+  tealTint: palette.tealTint,
+  success: palette.success,
+  warning: palette.warning,
+  error: palette.error,
+  info: palette.info,
+};
+
+export const lightColors = {
+  ...baseColors,
+  background: palette.paper,
+  surface: palette.paper,
+  surfaceAlt: palette.canvas,
+  text: palette.ink,
+  textMuted: palette.mutedText,
+  primary: palette.blue,
+  primaryPressed: palette.bluePressed,
+  primaryText: palette.paper,
+  accent: palette.teal,
+  accentText: palette.ink,
+  borderSubtle: palette.border,
+  ring: palette.blue,
+  overlay: "rgba(11, 13, 18, 0.35)",
+  overlayStrong: "rgba(11, 13, 18, 0.55)",
+  focus: palette.blue,
+};
+
+export const darkColors = {
+  ...baseColors,
+  background: "#0A0C10",
+  surface: "#141821",
+  surfaceAlt: "#1B2230",
+  text: "#F4F6FA",
+  textMuted: "#9AA3B2",
+  primary: "#3E7BFA",
+  primaryPressed: "#2E63D4",
+  primaryText: "#FFFFFF",
+  accent: palette.teal,
+  accentText: "#0B0D12",
+  borderSubtle: "#222A39",
+  ring: "#5D8BFF",
+  overlay: "rgba(5, 7, 10, 0.6)",
+  overlayStrong: "rgba(5, 7, 10, 0.8)",
+  focus: "#5D8BFF",
+};

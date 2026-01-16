@@ -11,6 +11,10 @@ import SessionDetailScreen from "@/screens/SessionDetailScreen";
 import LiveMonitoringScreen from "@/screens/LiveMonitoringScreen";
 import SessionSummaryScreen from "@/screens/SessionSummaryScreen";
 import EventSummaryScreen from "@/screens/EventSummaryScreen";
+import AttendeeDashboardScreen from "@/screens/AttendeeDashboardScreen";
+import ConsentScreen from "@/screens/ConsentScreen";
+import ThemeTickerScreen from "@/screens/ThemeTickerScreen";
+import EventIntelligenceDashboard from "@/screens/EventIntelligenceDashboard";
 
 export type RootStackParamList = {
   Join: undefined;
@@ -23,6 +27,10 @@ export type RootStackParamList = {
   LiveMonitoring: undefined;
   SessionSummary: { sessionId: number };
   EventSummary: { eventId: number };
+  AttendeeDashboard: { eventId: number };
+  Consent: undefined;
+  ThemeTicker: { eventId: number };
+  EventIntelligence: { eventId: number };
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -97,6 +105,34 @@ export default function RootStackNavigator() {
         component={EventSummaryScreen}
         options={{
           headerTitle: "Event Summary",
+        }}
+      />
+      <Stack.Screen
+        name="AttendeeDashboard"
+        component={AttendeeDashboardScreen}
+        options={{
+          headerTitle: "Attendee Dashboard",
+        }}
+      />
+      <Stack.Screen
+        name="Consent"
+        component={ConsentScreen}
+        options={{
+          headerTitle: "Consent & Transparency",
+        }}
+      />
+      <Stack.Screen
+        name="ThemeTicker"
+        component={ThemeTickerScreen}
+        options={{
+          headerTitle: "Theme Ticker",
+        }}
+      />
+      <Stack.Screen
+        name="EventIntelligence"
+        component={EventIntelligenceDashboard}
+        options={{
+          headerTitle: "Event Intelligence",
         }}
       />
     </Stack.Navigator>

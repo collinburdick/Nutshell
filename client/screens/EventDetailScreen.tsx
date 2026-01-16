@@ -31,6 +31,9 @@ interface Event {
   name: string;
   description: string | null;
   status: string;
+  privacyMode?: string | null;
+  retainAudio?: boolean;
+  allowQuotes?: boolean;
 }
 
 interface Session {
@@ -54,9 +57,89 @@ export default function EventDetailScreen() {
   const [newSessionName, setNewSessionName] = useState("");
   const [newSessionTopic, setNewSessionTopic] = useState("");
   const [discussionGuide, setDiscussionGuide] = useState("");
+  const [agendaPhases, setAgendaPhases] = useState("");
+  const [showInsightPack, setShowInsightPack] = useState(false);
+  const [insightPackContent, setInsightPackContent] = useState("");
+  const [shareLink, setShareLink] = useState<string | null>(null);
+  const [showRedactionQueue, setShowRedactionQueue] = useState(false);
+  const [showExportModal, setShowExportModal] = useState(false);
 
   const { data: event } = useQuery<Event>({
     queryKey: ["/api/events", eventId],
+  });
+
+  const updateEventMutation = useMutation({
+    mutationFn: async (payload: Partial<Event>) => {
+      const res = await apiRequest("PATCH", `/api/events/${eventId}`, payload);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/events", eventId] });
+    },
+  });
+
+  const insightPackMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("GET", `/api/events/${eventId}/insight-pack`);
+      return res.json();
+    },
+    onSuccess: (data) => {
+      setInsightPackContent(data.content || "");
+      setShowInsightPack(true);
+    },
+  });
+
+  const shareLinkMutation = useMutation({
+    mutationFn: async (role: string) => {
+      const res = await apiRequest("POST", "/api/share-links", {
+        eventId,
+        role,
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      });
+      return res.json();
+    },
+    onSuccess: (data) => {
+      const url = `${process.env.EXPO_PUBLIC_DOMAIN}/share/${data.token}`;
+      setShareLink(url);
+    },
+  });
+
+  const { data: redactionTasks, refetch: refetchRedaction } = useQuery<
+    { id: number; inputText: string; status: string }[]
+  >({
+    queryKey: ["/api/redaction-tasks", eventId],
+    queryFn: async () => {
+      const res = await apiRequest("GET", `/api/redaction-tasks?eventId=${eventId}`);
+      return res.json();
+    },
+  });
+
+  const approveRedactionMutation = useMutation({
+    mutationFn: async (taskId: number) => {
+      const res = await apiRequest("PATCH", `/api/redaction-tasks/${taskId}`, {
+        status: "approved",
+        redactedText: "Approved",
+        reviewedAt: new Date(),
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      refetchRedaction();
+    },
+  });
+
+  const exportMutation = useMutation({
+    mutationFn: async (destination: string) => {
+      const res = await apiRequest("POST", "/api/exports", {
+        eventId,
+        destination,
+        status: "queued",
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      setShowExportModal(false);
+    },
   });
 
   const { data: sessions, isLoading, refetch } = useQuery<Session[]>({
@@ -69,11 +152,16 @@ export default function EventDetailScreen() {
         .split("\n")
         .map((item) => item.trim())
         .filter((item) => item.length > 0);
+      const phases = agendaPhases
+        .split("\n")
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0);
 
       const res = await apiRequest("POST", `/api/events/${eventId}/sessions`, {
         name: newSessionName,
         topic: newSessionTopic,
         discussionGuide: guideItems,
+        agendaPhases: phases,
         status: "pending",
       });
       return res.json();
@@ -85,6 +173,7 @@ export default function EventDetailScreen() {
       setNewSessionName("");
       setNewSessionTopic("");
       setDiscussionGuide("");
+      setAgendaPhases("");
     },
   });
 
@@ -137,6 +226,128 @@ export default function EventDetailScreen() {
               View Event Summary
             </ThemedText>
           </Pressable>
+          <Pressable
+            onPress={() => navigation.navigate("AttendeeDashboard", { eventId })}
+            style={({ pressed }) => [
+              styles.summaryButton,
+              { backgroundColor: theme.backgroundSecondary, opacity: pressed ? 0.8 : 1 },
+            ]}
+          >
+            <Feather name="users" size={18} color={theme.text} />
+            <ThemedText type="body" style={{ color: theme.text, fontWeight: "600" }}>
+              Attendee View
+            </ThemedText>
+          </Pressable>
+          <Pressable
+            onPress={() => navigation.navigate("EventIntelligence", { eventId })}
+            style={({ pressed }) => [
+              styles.summaryButton,
+              { backgroundColor: theme.backgroundSecondary, opacity: pressed ? 0.8 : 1 },
+            ]}
+          >
+            <Feather name="activity" size={18} color={theme.text} />
+            <ThemedText type="body" style={{ color: theme.text, fontWeight: "600" }}>
+              Intelligence Dashboard
+            </ThemedText>
+          </Pressable>
+          <View style={styles.shareActions}>
+            <Pressable
+              onPress={() => insightPackMutation.mutate()}
+              style={[styles.shareButton, { backgroundColor: theme.backgroundSecondary }]}
+            >
+              <Feather name="file-text" size={16} color={theme.text} />
+              <ThemedText type="caption" style={{ color: theme.text }}>
+                Insight Pack
+              </ThemedText>
+            </Pressable>
+            <Pressable
+              onPress={() => shareLinkMutation.mutate("attendee")}
+              style={[styles.shareButton, { backgroundColor: theme.backgroundSecondary }]}
+            >
+              <Feather name="share-2" size={16} color={theme.text} />
+              <ThemedText type="caption" style={{ color: theme.text }}>
+                Share Link
+              </ThemedText>
+            </Pressable>
+            <Pressable
+              onPress={() => navigation.navigate("ThemeTicker", { eventId })}
+              style={[styles.shareButton, { backgroundColor: theme.backgroundSecondary }]}
+            >
+              <Feather name="activity" size={16} color={theme.text} />
+              <ThemedText type="caption" style={{ color: theme.text }}>
+                Theme Ticker
+              </ThemedText>
+            </Pressable>
+            <Pressable
+              onPress={() => setShowRedactionQueue(true)}
+              style={[styles.shareButton, { backgroundColor: theme.backgroundSecondary }]}
+            >
+              <Feather name="shield" size={16} color={theme.text} />
+              <ThemedText type="caption" style={{ color: theme.text }}>
+                Redaction Queue
+              </ThemedText>
+            </Pressable>
+            <Pressable
+              onPress={() => setShowExportModal(true)}
+              style={[styles.shareButton, { backgroundColor: theme.backgroundSecondary }]}
+            >
+              <Feather name="upload" size={16} color={theme.text} />
+              <ThemedText type="caption" style={{ color: theme.text }}>
+                Export
+              </ThemedText>
+            </Pressable>
+          </View>
+          {shareLink ? (
+            <ThemedText type="caption" style={{ color: theme.textMuted }}>
+              {shareLink}
+            </ThemedText>
+          ) : null}
+        </View>
+
+        <View style={[styles.eventInfo, { backgroundColor: theme.backgroundDefault }]}>
+          <ThemedText type="h4">Privacy Mode</ThemedText>
+          <View style={styles.privacyRow}>
+            {["strict", "balanced", "custom"].map((mode) => (
+              <Pressable
+                key={mode}
+                onPress={() => updateEventMutation.mutate({ privacyMode: mode })}
+                style={[
+                  styles.privacyChip,
+                  {
+                    backgroundColor:
+                      event?.privacyMode === mode ? theme.link : theme.backgroundSecondary,
+                  },
+                ]}
+              >
+                <ThemedText
+                  type="caption"
+                  style={{ color: event?.privacyMode === mode ? theme.buttonText : theme.textSecondary }}
+                >
+                  {mode}
+                </ThemedText>
+              </Pressable>
+            ))}
+          </View>
+          <View style={styles.privacyToggles}>
+            <Pressable
+              onPress={() => updateEventMutation.mutate({ retainAudio: !event?.retainAudio })}
+              style={[styles.toggleRow, { backgroundColor: theme.backgroundSecondary }]}
+            >
+              <ThemedText type="caption" style={{ color: theme.textSecondary }}>
+                Retain raw audio
+              </ThemedText>
+              <Feather name={event?.retainAudio ? "check-circle" : "circle"} size={18} color={theme.textMuted} />
+            </Pressable>
+            <Pressable
+              onPress={() => updateEventMutation.mutate({ allowQuotes: !event?.allowQuotes })}
+              style={[styles.toggleRow, { backgroundColor: theme.backgroundSecondary }]}
+            >
+              <ThemedText type="caption" style={{ color: theme.textSecondary }}>
+                Allow quotes in summaries
+              </ThemedText>
+              <Feather name={event?.allowQuotes ? "check-circle" : "circle"} size={18} color={theme.textMuted} />
+            </Pressable>
+          </View>
         </View>
 
         <View style={styles.sectionHeader}>
@@ -212,7 +423,7 @@ export default function EventDetailScreen() {
         animationType="slide"
         onRequestClose={() => setShowCreateModal(false)}
       >
-        <Pressable style={styles.modalOverlay} onPress={() => setShowCreateModal(false)}>
+        <Pressable style={[styles.modalOverlay, { backgroundColor: theme.overlay }]} onPress={() => setShowCreateModal(false)}>
           <Pressable style={[styles.modalContent, { backgroundColor: theme.backgroundDefault }]} onPress={() => {}}>
             <View style={styles.modalHeader}>
               <ThemedText type="h4">Create Session</ThemedText>
@@ -266,6 +477,21 @@ export default function EventDetailScreen() {
                   />
                 </View>
 
+                <View>
+                  <ThemedText type="small" style={{ color: theme.textSecondary, marginBottom: Spacing.xs }}>
+                    AGENDA PHASES (ONE PER LINE)
+                  </ThemedText>
+                  <TextInput
+                    style={[styles.modalInput, styles.largeTextArea, { backgroundColor: theme.backgroundSecondary, color: theme.text }]}
+                    placeholder={"Warm-up\nDeep Dive\nWrap-up"}
+                    placeholderTextColor={theme.textMuted}
+                    value={agendaPhases}
+                    onChangeText={setAgendaPhases}
+                    multiline
+                    numberOfLines={4}
+                  />
+                </View>
+
                 <Pressable
                   onPress={() => createSessionMutation.mutate()}
                   disabled={!newSessionName.trim() || createSessionMutation.isPending}
@@ -280,6 +506,104 @@ export default function EventDetailScreen() {
                 </Pressable>
               </View>
             </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <Modal
+        visible={showInsightPack}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowInsightPack(false)}
+      >
+        <Pressable style={[styles.modalOverlay, { backgroundColor: theme.overlay }]} onPress={() => setShowInsightPack(false)}>
+          <Pressable style={[styles.modalContent, { backgroundColor: theme.backgroundDefault }]} onPress={() => {}}>
+            <View style={styles.modalHeader}>
+              <ThemedText type="h4">Insight Pack</ThemedText>
+              <Pressable onPress={() => setShowInsightPack(false)}>
+                <Feather name="x" size={24} color={theme.text} />
+              </Pressable>
+            </View>
+            <ScrollView style={styles.modalScroll}>
+              <ThemedText type="body" style={{ color: theme.textSecondary }}>
+                {insightPackContent || "Generating insight pack..."}
+              </ThemedText>
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <Modal
+        visible={showRedactionQueue}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowRedactionQueue(false)}
+      >
+        <Pressable style={[styles.modalOverlay, { backgroundColor: theme.overlay }]} onPress={() => setShowRedactionQueue(false)}>
+          <Pressable style={[styles.modalContent, { backgroundColor: theme.backgroundDefault }]} onPress={() => {}}>
+            <View style={styles.modalHeader}>
+              <ThemedText type="h4">Redaction Queue</ThemedText>
+              <Pressable onPress={() => setShowRedactionQueue(false)}>
+                <Feather name="x" size={24} color={theme.text} />
+              </Pressable>
+            </View>
+            <ScrollView style={styles.modalScroll}>
+              {redactionTasks && redactionTasks.length > 0 ? (
+                redactionTasks.map((task) => (
+                  <View key={task.id} style={[styles.redactionCard, { backgroundColor: theme.backgroundSecondary }]}>
+                    <ThemedText type="caption" style={{ color: theme.textMuted }}>
+                      {task.status}
+                    </ThemedText>
+                    <ThemedText type="body" style={{ color: theme.textSecondary }}>
+                      {task.inputText}
+                    </ThemedText>
+                    <Pressable
+                      onPress={() => approveRedactionMutation.mutate(task.id)}
+                      style={[styles.redactionButton, { backgroundColor: theme.link }]}
+                    >
+                      <ThemedText type="caption" style={{ color: theme.buttonText }}>
+                        Approve
+                      </ThemedText>
+                    </Pressable>
+                  </View>
+                ))
+              ) : (
+                <ThemedText type="caption" style={{ color: theme.textMuted }}>
+                  No pending redactions.
+                </ThemedText>
+              )}
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <Modal
+        visible={showExportModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowExportModal(false)}
+      >
+        <Pressable style={[styles.modalOverlay, { backgroundColor: theme.overlay }]} onPress={() => setShowExportModal(false)}>
+          <Pressable style={[styles.modalContent, { backgroundColor: theme.backgroundDefault }]} onPress={() => {}}>
+            <View style={styles.modalHeader}>
+              <ThemedText type="h4">Export Insights</ThemedText>
+              <Pressable onPress={() => setShowExportModal(false)}>
+                <Feather name="x" size={24} color={theme.text} />
+              </Pressable>
+            </View>
+            <View style={styles.modalForm}>
+              {["Slack", "Notion", "Salesforce", "CSV", "PDF"].map((destination) => (
+                <Pressable
+                  key={destination}
+                  onPress={() => exportMutation.mutate(destination.toLowerCase())}
+                  style={[styles.exportButton, { backgroundColor: theme.backgroundSecondary }]}
+                >
+                  <ThemedText type="body" style={{ color: theme.text }}>
+                    {destination}
+                  </ThemedText>
+                </Pressable>
+              ))}
+            </View>
           </Pressable>
         </Pressable>
       </Modal>
@@ -329,6 +653,57 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.lg,
     borderRadius: BorderRadius.md,
     marginTop: Spacing.md,
+  },
+  shareActions: {
+    flexDirection: "row",
+    gap: Spacing.sm,
+    marginTop: Spacing.md,
+  },
+  shareButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.xs,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    borderRadius: BorderRadius.md,
+  },
+  redactionCard: {
+    padding: Spacing.md,
+    borderRadius: BorderRadius.md,
+    gap: Spacing.sm,
+    marginBottom: Spacing.md,
+  },
+  redactionButton: {
+    alignSelf: "flex-start",
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: Spacing.xs,
+    borderRadius: BorderRadius.md,
+  },
+  exportButton: {
+    padding: Spacing.md,
+    borderRadius: BorderRadius.md,
+  },
+  privacyRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: Spacing.sm,
+    marginTop: Spacing.sm,
+  },
+  privacyChip: {
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs,
+    borderRadius: BorderRadius.full,
+  },
+  privacyToggles: {
+    marginTop: Spacing.md,
+    gap: Spacing.sm,
+  },
+  toggleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: Spacing.md,
+    borderRadius: BorderRadius.md,
   },
   sectionHeader: {
     flexDirection: "row",
@@ -381,7 +756,6 @@ const styles = StyleSheet.create({
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.5)",
     justifyContent: "flex-end",
   },
   modalContent: {

@@ -88,14 +88,15 @@ interface PrevalenceBadgeProps {
 }
 
 function PrevalenceBadge({ prevalence }: PrevalenceBadgeProps) {
+  const { tokens } = useTheme();
   const getColors = () => {
     switch (prevalence) {
       case "High":
-        return { bg: "#D97706", text: "#FFFFFF" };
+        return { bg: tokens.colors.primary, text: tokens.colors.primaryText };
       case "Medium":
-        return { bg: "#F97316", text: "#FFFFFF" };
+        return { bg: tokens.colors.accent, text: tokens.colors.accentText };
       case "Low":
-        return { bg: "#6B7280", text: "#FFFFFF" };
+        return { bg: tokens.colors.surfaceAlt, text: tokens.colors.textMuted };
     }
   };
 
@@ -113,7 +114,7 @@ function PrevalenceBadge({ prevalence }: PrevalenceBadgeProps) {
 export default function SessionSummaryScreen() {
   const insets = useSafeAreaInsets();
   const headerHeight = useHeaderHeight();
-  const { theme, isDark } = useTheme();
+  const { theme, isDark, tokens } = useTheme();
   const route = useRoute<SessionSummaryRouteProp>();
   const { sessionId } = route.params;
 
@@ -185,10 +186,10 @@ export default function SessionSummaryScreen() {
     t.theme.toLowerCase().includes(searchQuery.toLowerCase())
   ) || [];
 
-  const presentBg = darkPresentation ? "#0A0A0A" : theme.backgroundRoot;
-  const presentText = darkPresentation ? "#FFFFFF" : theme.text;
-  const presentMuted = darkPresentation ? "#888888" : theme.textMuted;
-  const amber = "#D97706";
+  const presentBg = darkPresentation ? tokens.colors.ink : tokens.colors.background;
+  const presentText = darkPresentation ? tokens.colors.paper : tokens.colors.text;
+  const presentMuted = darkPresentation ? tokens.colors.mutedText : tokens.colors.textMuted;
+  const amber = tokens.colors.primary;
 
   if (isLoading) {
     return (
@@ -215,7 +216,7 @@ export default function SessionSummaryScreen() {
             onPress={() => refetch()}
             style={[styles.retryButton, { backgroundColor: amber }]}
           >
-            <ThemedText type="body" style={{ color: "#FFFFFF", fontWeight: "600" }}>
+            <ThemedText type="body" style={{ color: tokens.colors.primaryText, fontWeight: "600" }}>
               Retry
             </ThemedText>
           </Pressable>
@@ -260,7 +261,14 @@ export default function SessionSummaryScreen() {
       <StatusBar barStyle={viewMode === "present" && darkPresentation ? "light-content" : isDark ? "light-content" : "dark-content"} />
       
       <View style={[styles.modeToggleContainer, { paddingTop: headerHeight + Spacing.sm }]}>
-        <View style={[styles.segmentedControl, { backgroundColor: viewMode === "present" ? (darkPresentation ? "#1A1A1A" : theme.backgroundSecondary) : theme.backgroundSecondary }]}>
+        <View
+          style={[
+            styles.segmentedControl,
+            {
+              backgroundColor: viewMode === "present" ? tokens.colors.surfaceAlt : tokens.colors.surfaceAlt,
+            },
+          ]}
+        >
           <Pressable
             onPress={() => {
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -271,10 +279,10 @@ export default function SessionSummaryScreen() {
               viewMode === "present" && { backgroundColor: amber },
             ]}
           >
-            <Feather name="monitor" size={16} color={viewMode === "present" ? "#FFFFFF" : theme.textSecondary} />
+            <Feather name="monitor" size={16} color={viewMode === "present" ? tokens.colors.primaryText : theme.textSecondary} />
             <ThemedText
               type="caption"
-              style={{ color: viewMode === "present" ? "#FFFFFF" : theme.textSecondary, fontWeight: "600" }}
+              style={{ color: viewMode === "present" ? tokens.colors.primaryText : theme.textSecondary, fontWeight: "600" }}
             >
               Present
             </ThemedText>
@@ -289,10 +297,10 @@ export default function SessionSummaryScreen() {
               viewMode === "explore" && { backgroundColor: amber },
             ]}
           >
-            <Feather name="search" size={16} color={viewMode === "explore" ? "#FFFFFF" : theme.textSecondary} />
+            <Feather name="search" size={16} color={viewMode === "explore" ? tokens.colors.primaryText : theme.textSecondary} />
             <ThemedText
               type="caption"
-              style={{ color: viewMode === "explore" ? "#FFFFFF" : theme.textSecondary, fontWeight: "600" }}
+              style={{ color: viewMode === "explore" ? tokens.colors.primaryText : theme.textSecondary, fontWeight: "600" }}
             >
               Explore
             </ThemedText>
@@ -305,9 +313,9 @@ export default function SessionSummaryScreen() {
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
               setDarkPresentation(!darkPresentation);
             }}
-            style={[styles.darkModeButton, { backgroundColor: darkPresentation ? "#333" : theme.backgroundSecondary }]}
+            style={[styles.darkModeButton, { backgroundColor: darkPresentation ? tokens.colors.surfaceAlt : theme.backgroundSecondary }]}
           >
-            <Feather name={darkPresentation ? "sun" : "moon"} size={18} color={darkPresentation ? "#FFF" : theme.text} />
+            <Feather name={darkPresentation ? "sun" : "moon"} size={18} color={darkPresentation ? tokens.colors.primaryText : theme.text} />
           </Pressable>
         ) : null}
       </View>
@@ -620,7 +628,7 @@ export default function SessionSummaryScreen() {
                       >
                         <View style={styles.tableSectionHeader}>
                           <View style={[styles.tableNumber, { backgroundColor: amber }]}>
-                            <ThemedText type="caption" style={{ color: "#FFF", fontWeight: "700" }}>
+                            <ThemedText type="caption" style={{ color: tokens.colors.primaryText, fontWeight: "700" }}>
                               {table.tableNumber}
                             </ThemedText>
                           </View>

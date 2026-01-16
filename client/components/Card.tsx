@@ -9,7 +9,6 @@ import Animated, {
 
 import { ThemedText } from "@/components/ThemedText";
 import { useTheme } from "@/hooks/useTheme";
-import { Spacing, BorderRadius } from "@/constants/theme";
 
 interface CardProps {
   elevation?: number;
@@ -28,19 +27,14 @@ const springConfig: WithSpringConfig = {
   energyThreshold: 0.001,
 };
 
-const getBackgroundColorForElevation = (
-  elevation: number,
-  theme: any,
-): string => {
+const getBackgroundColorForElevation = (elevation: number, colors: any): string => {
   switch (elevation) {
     case 1:
-      return theme.backgroundDefault;
+      return colors.surface;
     case 2:
-      return theme.backgroundSecondary;
-    case 3:
-      return theme.backgroundTertiary;
+      return colors.surfaceAlt;
     default:
-      return theme.backgroundRoot;
+      return colors.background;
   }
 };
 
@@ -54,10 +48,10 @@ export function Card({
   onPress,
   style,
 }: CardProps) {
-  const { theme } = useTheme();
+  const { tokens } = useTheme();
   const scale = useSharedValue(1);
 
-  const cardBackgroundColor = getBackgroundColorForElevation(elevation, theme);
+  const cardBackgroundColor = getBackgroundColorForElevation(elevation, tokens.colors);
 
   const animatedStyle = useAnimatedStyle(() => ({
     transform: [{ scale: scale.value }],
@@ -80,6 +74,10 @@ export function Card({
         styles.card,
         {
           backgroundColor: cardBackgroundColor,
+          borderRadius: tokens.radii.lg,
+          borderColor: tokens.colors.borderSubtle,
+          padding: tokens.spacing.lg,
+          ...tokens.shadows.sm,
         },
         animatedStyle,
         style,
@@ -102,11 +100,10 @@ export function Card({
 
 const styles = StyleSheet.create({
   card: {
-    padding: Spacing.xl,
-    borderRadius: BorderRadius["2xl"],
+    borderWidth: 1,
   },
   cardTitle: {
-    marginBottom: Spacing.sm,
+    marginBottom: 8,
   },
   cardDescription: {
     opacity: 0.7,

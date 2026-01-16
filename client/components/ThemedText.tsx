@@ -1,7 +1,6 @@
 import { Text, type TextProps } from "react-native";
 
 import { useTheme } from "@/hooks/useTheme";
-import { Typography } from "@/constants/theme";
 
 export type ThemedTextProps = TextProps & {
   lightColor?: string;
@@ -16,7 +15,7 @@ export function ThemedText({
   type = "body",
   ...rest
 }: ThemedTextProps) {
-  const { theme, isDark } = useTheme();
+  const { isDark, tokens } = useTheme();
 
   const getColor = () => {
     if (isDark && darkColor) {
@@ -28,32 +27,79 @@ export function ThemedText({
     }
 
     if (type === "link") {
-      return theme.link;
+      return tokens.colors.primary;
     }
 
-    return theme.text;
+    return tokens.colors.text;
   };
 
   const getTypeStyle = () => {
     switch (type) {
       case "h1":
-        return Typography.h1;
+        return tokens.typography.sizes.display
+          ? {
+              fontSize: tokens.typography.sizes.display,
+              lineHeight: tokens.typography.lineHeights.display,
+              fontWeight: tokens.typography.weights.semibold,
+              fontFamily: tokens.typography.fontFamily,
+            }
+          : {};
       case "h2":
-        return Typography.h2;
+        return {
+          fontSize: tokens.typography.sizes.xl,
+          lineHeight: tokens.typography.lineHeights.xl,
+          fontWeight: tokens.typography.weights.semibold,
+          fontFamily: tokens.typography.fontFamily,
+        };
       case "h3":
-        return Typography.h3;
+        return {
+          fontSize: tokens.typography.sizes.lg,
+          lineHeight: tokens.typography.lineHeights.lg,
+          fontWeight: tokens.typography.weights.semibold,
+          fontFamily: tokens.typography.fontFamily,
+        };
       case "h4":
-        return Typography.h4;
+        return {
+          fontSize: tokens.typography.sizes.md,
+          lineHeight: tokens.typography.lineHeights.md,
+          fontWeight: tokens.typography.weights.semibold,
+          fontFamily: tokens.typography.fontFamily,
+        };
       case "body":
-        return Typography.body;
+        return {
+          fontSize: tokens.typography.sizes.md,
+          lineHeight: tokens.typography.lineHeights.md,
+          fontWeight: tokens.typography.weights.regular,
+          fontFamily: tokens.typography.fontFamily,
+        };
       case "small":
-        return Typography.small;
+        return {
+          fontSize: tokens.typography.sizes.sm,
+          lineHeight: tokens.typography.lineHeights.sm,
+          fontWeight: tokens.typography.weights.regular,
+          fontFamily: tokens.typography.fontFamily,
+        };
       case "caption":
-        return Typography.caption;
+        return {
+          fontSize: tokens.typography.sizes.xs,
+          lineHeight: tokens.typography.lineHeights.xs,
+          fontWeight: tokens.typography.weights.regular,
+          fontFamily: tokens.typography.fontFamily,
+        };
       case "link":
-        return Typography.link;
+        return {
+          fontSize: tokens.typography.sizes.md,
+          lineHeight: tokens.typography.lineHeights.md,
+          fontWeight: tokens.typography.weights.medium,
+          fontFamily: tokens.typography.fontFamily,
+        };
       default:
-        return Typography.body;
+        return {
+          fontSize: tokens.typography.sizes.md,
+          lineHeight: tokens.typography.lineHeights.md,
+          fontWeight: tokens.typography.weights.regular,
+          fontFamily: tokens.typography.fontFamily,
+        };
     }
   };
 

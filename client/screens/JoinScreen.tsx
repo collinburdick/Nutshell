@@ -8,11 +8,13 @@ import {
   Keyboard,
   Platform,
   ActivityIndicator,
+  Modal,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import { useMutation } from "@tanstack/react-query";
 import * as Haptics from "expo-haptics";
+import { BarCodeScanner } from "expo-barcode-scanner";
 import { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useNavigation } from "@react-navigation/native";
 
@@ -31,6 +33,8 @@ export default function JoinScreen() {
   const navigation = useNavigation<NavigationProp>();
   const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [showScanner, setShowScanner] = useState(false);
+  const [cameraPermission, setCameraPermission] = useState<boolean | null>(null);
   const inputRefs = useRef<(TextInput | null)[]>([]);
 
   const joinMutation = useMutation({
@@ -77,6 +81,23 @@ export default function JoinScreen() {
       return;
     }
     joinMutation.mutate(code);
+  };
+
+  const openScanner = async () => {
+    const { status } = await BarCodeScanner.requestPermissionsAsync();
+    setCameraPermission(status === "granted");
+    if (status === "granted") {
+      setShowScanner(true);
+    } else {
+      setError("Camera permission is required to scan QR codes.");
+    }
+  };
+
+  const handleScan = ({ data }: { data: string }) => {
+    const match = data.match(/code=([A-Za-z0-9]{6})/);
+    const scannedCode = match ? match[1] : data.slice(-6);
+    setCode(scannedCode.toUpperCase());
+    setShowScanner(false);
   };
 
   const isLoading = joinMutation.isPending;
@@ -166,6 +187,19 @@ export default function JoinScreen() {
               </>
             )}
           </Pressable>
+
+          <Pressable
+            onPress={openScanner}
+            style={({ pressed }) => [
+              styles.scanButton,
+              { backgroundColor: theme.backgroundDefault, opacity: pressed ? 0.8 : 1 },
+            ]}
+          >
+            <Feather name="camera" size={18} color={theme.text} />
+            <ThemedText type="body" style={{ color: theme.text }}>
+              Scan QR
+            </ThemedText>
+          </Pressable>
         </View>
 
         <View style={styles.infoContainer}>
@@ -201,7 +235,30 @@ export default function JoinScreen() {
             Admin Login
           </ThemedText>
         </Pressable>
+        <Pressable
+          onPress={() => navigation.navigate("Consent")}
+          style={styles.adminLink}
+        >
+          <Feather name="info" size={14} color={theme.textMuted} />
+          <ThemedText type="caption" style={{ color: theme.textMuted }}>
+            Consent & Transparency
+          </ThemedText>
+        </Pressable>
       </View>
+
+      <Modal visible={showScanner} transparent animationType="slide" onRequestClose={() => setShowScanner(false)}>
+        <View style={[styles.scannerOverlay, { backgroundColor: theme.overlayStrong }]}>
+          <View style={styles.scannerContainer}>
+            <BarCodeScanner
+              onBarCodeScanned={handleScan}
+              style={StyleSheet.absoluteFillObject}
+            />
+            <Pressable onPress={() => setShowScanner(false)} style={styles.scannerClose}>
+              <Feather name="x" size={24} color={theme.buttonText} />
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
     </ThemedView>
   );
 }
@@ -272,6 +329,15 @@ const styles = StyleSheet.create({
     borderRadius: BorderRadius.lg,
     gap: Spacing.sm,
   },
+  scanButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    height: 48,
+    borderRadius: BorderRadius.lg,
+    gap: Spacing.sm,
+    marginTop: Spacing.md,
+  },
   joinButtonText: {
     fontWeight: "600",
   },
@@ -301,5 +367,21 @@ const styles = StyleSheet.create({
     gap: Spacing.xs,
     marginTop: Spacing.lg,
     paddingVertical: Spacing.sm,
+  },
+  scannerOverlay: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  scannerContainer: {
+    width: "90%",
+    height: "70%",
+    borderRadius: BorderRadius.lg,
+    overflow: "hidden",
+  },
+  scannerClose: {
+    position: "absolute",
+    top: 16,
+    right: 16,
   },
 });

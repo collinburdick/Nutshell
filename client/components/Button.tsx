@@ -1,4 +1,4 @@
-import React, { ReactNode } from "react";
+import React, { ReactNode, useState } from "react";
 import { StyleSheet, Pressable, ViewStyle, StyleProp } from "react-native";
 import Animated, {
   useAnimatedStyle,
@@ -9,7 +9,6 @@ import Animated, {
 
 import { ThemedText } from "@/components/ThemedText";
 import { useTheme } from "@/hooks/useTheme";
-import { BorderRadius, Spacing } from "@/constants/theme";
 
 interface ButtonProps {
   onPress?: () => void;
@@ -34,8 +33,9 @@ export function Button({
   style,
   disabled = false,
 }: ButtonProps) {
-  const { theme } = useTheme();
+  const { tokens } = useTheme();
   const scale = useSharedValue(1);
+  const [isPressed, setIsPressed] = useState(false);
 
   const animatedStyle = useAnimatedStyle(() => ({
     transform: [{ scale: scale.value }],
@@ -43,12 +43,14 @@ export function Button({
 
   const handlePressIn = () => {
     if (!disabled) {
+      setIsPressed(true);
       scale.value = withSpring(0.98, springConfig);
     }
   };
 
   const handlePressOut = () => {
     if (!disabled) {
+      setIsPressed(false);
       scale.value = withSpring(1, springConfig);
     }
   };
@@ -62,7 +64,14 @@ export function Button({
       style={[
         styles.button,
         {
-          backgroundColor: theme.link,
+          backgroundColor: disabled
+            ? tokens.colors.surfaceAlt
+            : isPressed
+              ? tokens.colors.primaryPressed
+              : tokens.colors.primary,
+          borderRadius: tokens.radii.full,
+          minHeight: 48,
+          paddingHorizontal: tokens.spacing.lg,
           opacity: disabled ? 0.5 : 1,
         },
         style,
@@ -71,7 +80,7 @@ export function Button({
     >
       <ThemedText
         type="body"
-        style={[styles.buttonText, { color: theme.buttonText }]}
+        style={[styles.buttonText, { color: tokens.colors.primaryText }]}
       >
         {children}
       </ThemedText>
@@ -81,8 +90,6 @@ export function Button({
 
 const styles = StyleSheet.create({
   button: {
-    height: Spacing.buttonHeight,
-    borderRadius: BorderRadius.full,
     alignItems: "center",
     justifyContent: "center",
   },

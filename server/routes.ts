@@ -15,6 +15,18 @@ const nudgeRateLimit = new Map<string, number>();
 const NUDGE_RATE_LIMIT_MS = 30000;
 const BROADCAST_RATE_LIMIT_MS = 60000;
 
+function generateShareToken(): string {
+  return crypto.randomBytes(24).toString("hex");
+}
+
+function getHealthState(lastAudioAt: Date | null): "active" | "degraded" | "offline" {
+  if (!lastAudioAt) return "offline";
+  const diffMs = Date.now() - lastAudioAt.getTime();
+  if (diffMs <= 60000) return "active";
+  if (diffMs <= 180000) return "degraded";
+  return "offline";
+}
+
 function generateAdminToken(): string {
   return crypto.randomBytes(32).toString("hex");
 }
@@ -207,6 +219,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(404).json({ error: "Session not found" });
       }
 
+      const facilitators = await storage.getFacilitatorsByTable(table.id);
+      const activeCount = facilitators.filter((f) => f.isActive).length;
+      if (activeCount >= 2) {
+        return res.status(409).json({ error: "Table already has two active devices" });
+      }
+
       const facilitator = await storage.createFacilitator(table.id, req.body.deviceName);
 
       await storage.updateTable(table.id, { status: "active" });
@@ -239,11 +257,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
         topic: table.topic,
         sessionName: session?.name || "Session",
         discussionGuide: session?.discussionGuide || [],
+        agendaPhases: session?.agendaPhases || [],
         status: table.status,
       });
     } catch (error) {
       console.error("Error fetching table:", error);
       res.status(500).json({ error: "Failed to fetch table" });
+    }
+  });
+
+  app.get("/api/tables/:id/health", async (req: Request, res: Response) => {
+    try {
+      const tableId = parseInt(req.params.id);
+      const table = await storage.getTable(tableId);
+      if (!table) {
+        return res.status(404).json({ error: "Table not found" });
+      }
+      const health = getHealthState(table.lastAudioAt ? new Date(table.lastAudioAt) : null);
+      res.json({
+        status: health,
+        lastAudioAt: table.lastAudioAt,
+        lastTranscriptAt: table.lastTranscriptAt,
+        lastSummaryAt: table.lastSummaryAt,
+      });
+    } catch (error) {
+      console.error("Error fetching table health:", error);
+      res.status(500).json({ error: "Failed to fetch table health" });
     }
   });
 
@@ -259,6 +298,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
           themes: [],
           actionItems: [],
           openQuestions: [],
+          sentimentScore: null,
+          sentimentConfidence: null,
+          missingAngles: [],
           updatedAt: null,
         });
       }
@@ -268,6 +310,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         themes: summary.themes || [],
         actionItems: summary.actionItems || [],
         openQuestions: summary.openQuestions || [],
+        sentimentScore: summary.sentimentScore ?? null,
+        sentimentConfidence: summary.sentimentConfidence ?? null,
+        missingAngles: summary.missingAngles || [],
         updatedAt: summary.createdAt,
       });
     } catch (error) {
@@ -281,6 +326,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const tableId = parseInt(req.params.id);
       const nudges = await storage.getPendingNudges(tableId);
+      await Promise.all(
+        nudges.map(async (nudge) => {
+          await storage.recordNudgeDelivery({ nudgeId: nudge.id, deliveredAt: new Date() });
+          if (!nudge.deliveredAt) {
+            await storage.updateNudge(nudge.id, { deliveredAt: new Date() });
+          }
+        })
+      );
       res.json(nudges);
     } catch (error) {
       console.error("Error fetching nudges:", error);
@@ -293,6 +346,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const nudgeId = parseInt(req.params.id);
       await storage.acknowledgeNudge(nudgeId);
+      await storage.recordNudgeDelivery({ nudgeId, acknowledgedAt: new Date() });
+      await storage.updateNudge(nudgeId, { openedAt: new Date() });
       res.json({ success: true });
     } catch (error) {
       console.error("Error acknowledging nudge:", error);
@@ -312,7 +367,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       await storage.updateFacilitatorActivity(facilitator.id);
-      await storage.updateTable(tableId, { lastActivityAt: new Date() });
+      await storage.updateTable(tableId, { lastActivityAt: new Date(), lastAudioAt: new Date() });
 
       if (!audio || audio.length < 100) {
         return res.json({ success: true, transcription: null, message: "No audio data" });
@@ -336,11 +391,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
         if (transcriptText && transcriptText.trim().length > 0) {
           // Store the transcript
-          await storage.createTranscript({
+          const transcript = await storage.createTranscript({
             tableId,
             content: transcriptText,
             speakerTag: null, // De-identified
           });
+          await storage.createTranscriptLine({
+            transcriptId: transcript.id,
+            tableId,
+            speakerTag: null,
+            content: transcriptText,
+            startMs: null,
+            endMs: null,
+            redacted: false,
+            piiTags: [],
+          });
+          await storage.updateTable(tableId, { lastTranscriptAt: new Date() });
 
           // Generate or update rolling summary
           await generateRollingSummary(tableId);
@@ -373,13 +439,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
         messages: [
           {
             role: "system",
-            content: `You are an expert facilitator analyzing a roundtable discussion. Summarize the conversation and extract key themes, action items, and open questions.
+            content: `You are an expert facilitator analyzing a roundtable discussion. Summarize the conversation and extract key themes, action items, open questions, sentiment, and missing angles.
 
 Return a JSON object with:
 - "summary": a 2-3 sentence summary of the discussion so far
 - "themes": array of 3-5 key themes/topics being discussed
 - "actionItems": array of any action items or next steps mentioned
 - "openQuestions": array of unresolved questions or topics needing more discussion
+- "sentimentScore": number from -100 (very negative) to 100 (very positive)
+- "sentimentConfidence": number from 0 to 100
+- "missingAngles": array of 2-4 angles or perspectives that have not been addressed
 
 Keep the summary concise and focused on the most important points.`,
           },
@@ -401,7 +470,11 @@ Keep the summary concise and focused on the most important points.`,
         themes: result.themes || [],
         actionItems: result.actionItems || [],
         openQuestions: result.openQuestions || [],
+        sentimentScore: result.sentimentScore ?? null,
+        sentimentConfidence: result.sentimentConfidence ?? null,
+        missingAngles: result.missingAngles || [],
       });
+      await storage.updateTable(tableId, { lastSummaryAt: new Date() });
     } catch (error) {
       console.error("Error generating rolling summary:", error);
     }
@@ -467,6 +540,33 @@ Keep the summary concise and focused on the most important points.`,
     }
   });
 
+  app.get("/api/tables/:id/closing-script", async (req: Request, res: Response) => {
+    try {
+      const tableId = parseInt(req.params.id);
+      const transcripts = await storage.getTranscriptsByTable(tableId);
+      if (transcripts.length === 0) {
+        return res.json({ script: "Thank you for the discussion. We'll share a summary shortly." });
+      }
+      const conversationText = transcripts.map((t) => t.content).join("\n");
+      const response = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content: "Create a brief closing script that a facilitator can read aloud. Keep it 3-4 sentences and friendly.",
+          },
+          { role: "user", content: conversationText },
+        ],
+        max_completion_tokens: 300,
+      });
+      const script = response.choices[0]?.message?.content || "Thanks everyone for your insights today.";
+      res.json({ script });
+    } catch (error) {
+      console.error("Error generating closing script:", error);
+      res.status(500).json({ error: "Failed to generate closing script" });
+    }
+  });
+
   // Finalize session
   app.post("/api/tables/:id/finalize", async (req: Request, res: Response) => {
     try {
@@ -486,6 +586,33 @@ Keep the summary concise and focused on the most important points.`,
         actionItems,
         openQuestions,
       });
+      await storage.updateTable(tableId, { lastSummaryAt: new Date() });
+
+      const table = await storage.getTable(tableId);
+      const session = table ? await storage.getSession(table.sessionId) : undefined;
+      const eventId = session?.eventId;
+      if (eventId) {
+        await Promise.all(
+          (actionItems || []).map((item: string) =>
+            storage.createActionItem({
+              eventId,
+              sessionId: table?.sessionId,
+              tableId,
+              text: item,
+              status: "open",
+            })
+          )
+        );
+        await Promise.all(
+          (openQuestions || []).map((question: string) =>
+            storage.createOpenQuestion({
+              eventId,
+              sessionId: table?.sessionId,
+              question,
+            })
+          )
+        );
+      }
 
       await storage.updateTable(tableId, { status: "completed" });
 
@@ -493,6 +620,693 @@ Keep the summary concise and focused on the most important points.`,
     } catch (error) {
       console.error("Error finalizing session:", error);
       res.status(500).json({ error: "Failed to finalize session" });
+    }
+  });
+
+  // Parking lot items
+  app.get("/api/tables/:id/parking-lot", async (req: Request, res: Response) => {
+    try {
+      const tableId = parseInt(req.params.id);
+      const items = await storage.listParkingLotItems(tableId);
+      res.json(items);
+    } catch (error) {
+      console.error("Error fetching parking lot items:", error);
+      res.status(500).json({ error: "Failed to fetch parking lot items" });
+    }
+  });
+
+  app.post("/api/tables/:id/parking-lot", async (req: Request, res: Response) => {
+    try {
+      const tableId = parseInt(req.params.id);
+      const { text } = req.body;
+      const item = await storage.createParkingLotItem({ tableId, text });
+      res.status(201).json(item);
+    } catch (error) {
+      console.error("Error creating parking lot item:", error);
+      res.status(500).json({ error: "Failed to create parking lot item" });
+    }
+  });
+
+  // Golden nuggets
+  app.get("/api/tables/:id/golden-nuggets", async (req: Request, res: Response) => {
+    try {
+      const tableId = parseInt(req.params.id);
+      const items = await storage.listGoldenNuggets(tableId);
+      res.json(items);
+    } catch (error) {
+      console.error("Error fetching golden nuggets:", error);
+      res.status(500).json({ error: "Failed to fetch golden nuggets" });
+    }
+  });
+
+  app.post("/api/tables/:id/golden-nuggets", async (req: Request, res: Response) => {
+    try {
+      const tableId = parseInt(req.params.id);
+      const { text } = req.body;
+      const item = await storage.createGoldenNugget({ tableId, text });
+      res.status(201).json(item);
+    } catch (error) {
+      console.error("Error creating golden nugget:", error);
+      res.status(500).json({ error: "Failed to create golden nugget" });
+    }
+  });
+
+  // Summary translations
+  app.post("/api/summaries/:id/translate", async (req: Request, res: Response) => {
+    try {
+      const summaryId = parseInt(req.params.id);
+      const { language } = req.body;
+      const summary = await storage.getSummary(summaryId);
+      if (!summary) {
+        return res.status(404).json({ error: "Summary not found" });
+      }
+
+      const response = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+          { role: "system", content: "Translate the following summary accurately and keep bullet formatting." },
+          { role: "user", content: `Language: ${language}\n\n${summary.content}` },
+        ],
+        max_completion_tokens: 800,
+      });
+      const translated = response.choices[0]?.message?.content || summary.content;
+      const translation = await storage.createSummaryTranslation({
+        summaryId,
+        language,
+        content: translated,
+      });
+      res.status(201).json(translation);
+    } catch (error) {
+      console.error("Error translating summary:", error);
+      res.status(500).json({ error: "Failed to translate summary" });
+    }
+  });
+
+  // Action items by event
+  app.get("/api/events/:id/action-items", async (req: Request, res: Response) => {
+    try {
+      const eventId = parseInt(req.params.id);
+      const items = await storage.listActionItemsByEvent(eventId);
+      const tables = await storage.getAllTables();
+      const sessions = await storage.getSessionsByEvent(eventId);
+      const tableMap = new Map(tables.map((table) => [table.id, table]));
+      const sessionMap = new Map(sessions.map((session) => [session.id, session]));
+      const queries = items.map((item) => item.text.split(" ").slice(0, 6).join(" "));
+      const evidenceBatch = await storage.getEvidenceBatch(eventId, queries);
+      const evidenceMap = new Map(evidenceBatch.map((item) => [item.query, item]));
+      const withEvidence = await Promise.all(
+        items.map(async (item) => {
+          const query = item.text.split(" ").slice(0, 6).join(" ");
+          const evidence = evidenceMap.get(query);
+          const topLine = evidence?.topLine ?? undefined;
+          const table = topLine?.tableId ? tableMap.get(topLine.tableId) : item.tableId ? tableMap.get(item.tableId) : undefined;
+          const session = table ? sessionMap.get(table.sessionId) : item.sessionId ? sessionMap.get(item.sessionId) : undefined;
+          const tags = item.text
+            .toLowerCase()
+            .split(/\W+/)
+            .filter((word) => word.length > 4)
+            .slice(0, 3);
+          return {
+            ...item,
+            evidenceCount: evidence?.count ?? 0,
+            evidenceLineId: topLine?.id ?? null,
+            evidencePreview: topLine?.content ?? null,
+            evidenceSpeaker: topLine?.speakerTag ?? null,
+            evidenceAt: topLine?.createdAt ?? null,
+            tableNumber: table?.tableNumber ?? null,
+            sessionName: session?.name ?? null,
+            tags,
+          };
+        })
+      );
+      const withMerge = withEvidence.map((item) => {
+        const mergeCandidates = withEvidence
+          .filter((other) => other.id !== item.id && item.tags?.some((tag) => other.tags?.includes(tag)))
+          .slice(0, 3)
+          .map((other) => other.id);
+        return { ...item, mergeCandidates };
+      });
+      res.json(withMerge);
+    } catch (error) {
+      console.error("Error fetching action items:", error);
+      res.status(500).json({ error: "Failed to fetch action items" });
+    }
+  });
+
+  // Transcript lines (evidence stream)
+  app.get("/api/events/:id/transcript-lines", async (req: Request, res: Response) => {
+    try {
+      const eventId = parseInt(req.params.id);
+      const sessionId = req.query.sessionId ? parseInt(req.query.sessionId as string, 10) : undefined;
+      const tableId = req.query.tableId ? parseInt(req.query.tableId as string, 10) : undefined;
+      const query = req.query.q ? String(req.query.q) : undefined;
+      const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
+      const offset = req.query.offset ? parseInt(req.query.offset as string, 10) : undefined;
+      const lines = await storage.getTranscriptLinesByEvent(eventId, { sessionId, tableId, query, limit, offset });
+      const shouldAudit = req.query.audit !== "false";
+      if (shouldAudit) {
+        await storage.createAuditLog({
+          actor: "admin",
+          action: "view_transcript_lines",
+          entityType: "event",
+          entityId: eventId,
+          metadata: { sessionId, tableId, query, limit, offset },
+        });
+      }
+      res.json(lines);
+    } catch (error) {
+      console.error("Error fetching transcript lines:", error);
+      res.status(500).json({ error: "Failed to fetch transcript lines" });
+    }
+  });
+
+  app.get("/api/events/:id/transcript-lines/count", async (req: Request, res: Response) => {
+    try {
+      const eventId = parseInt(req.params.id);
+      const sessionId = req.query.sessionId ? parseInt(req.query.sessionId as string, 10) : undefined;
+      const tableId = req.query.tableId ? parseInt(req.query.tableId as string, 10) : undefined;
+      const query = req.query.q ? String(req.query.q) : undefined;
+      const count = await storage.countTranscriptLinesByEvent(eventId, { sessionId, tableId, query });
+      res.json({ count });
+    } catch (error) {
+      console.error("Error counting transcript lines:", error);
+      res.status(500).json({ error: "Failed to count transcript lines" });
+    }
+  });
+
+  app.get("/api/transcript-lines/:id/context", async (req: Request, res: Response) => {
+    try {
+      const lineId = parseInt(req.params.id);
+      const beforeSeconds = req.query.before ? parseInt(req.query.before as string, 10) : 30;
+      const afterSeconds = req.query.after ? parseInt(req.query.after as string, 10) : 30;
+      const lines = await storage.getTranscriptContext(lineId, beforeSeconds, afterSeconds);
+      const eventId = req.query.eventId ? parseInt(req.query.eventId as string, 10) : undefined;
+      if (eventId) {
+        await storage.createAuditLog({
+          actor: "admin",
+          action: "view_transcript_context",
+          entityType: "event",
+          entityId: eventId,
+          metadata: { lineId, beforeSeconds, afterSeconds },
+        });
+      }
+      res.json(lines);
+    } catch (error) {
+      console.error("Error fetching transcript context:", error);
+      res.status(500).json({ error: "Failed to fetch transcript context" });
+    }
+  });
+
+  // Evidence links
+  app.get("/api/summaries/:id/evidence", async (req: Request, res: Response) => {
+    try {
+      const summaryId = parseInt(req.params.id);
+      const links = await storage.getEvidenceLinksBySummary(summaryId);
+      res.json(links);
+    } catch (error) {
+      console.error("Error fetching evidence links:", error);
+      res.status(500).json({ error: "Failed to fetch evidence links" });
+    }
+  });
+
+  app.post("/api/evidence-links", async (req: Request, res: Response) => {
+    try {
+      const link = await storage.createEvidenceLink(req.body);
+      res.status(201).json(link);
+    } catch (error) {
+      console.error("Error creating evidence link:", error);
+      res.status(500).json({ error: "Failed to create evidence link" });
+    }
+  });
+
+  // Quote bank
+  app.get("/api/events/:id/quotes", async (req: Request, res: Response) => {
+    try {
+      const eventId = parseInt(req.params.id);
+      const quotes = await storage.listQuotesByEventDetailed(eventId);
+      res.json(
+        quotes.map((row) => ({
+          id: row.quote.id,
+          tableId: row.quote.tableId,
+          governance: row.quote.governance,
+          startMs: row.quote.startMs,
+          endMs: row.quote.endMs,
+          createdAt: row.quote.createdAt,
+          sessionName: row.session.name,
+          tableNumber: row.table.tableNumber,
+          transcriptLineId: row.quote.transcriptLineId,
+          speakerTag: row.line?.speakerTag ?? null,
+          content: row.line?.content ?? null,
+          lineAt: row.line?.createdAt ?? null,
+        }))
+      );
+    } catch (error) {
+      console.error("Error fetching quotes:", error);
+      res.status(500).json({ error: "Failed to fetch quotes" });
+    }
+  });
+
+  app.post("/api/quotes", async (req: Request, res: Response) => {
+    try {
+      const table = req.body.tableId ? await storage.getTable(req.body.tableId) : undefined;
+      const session = table ? await storage.getSession(table.sessionId) : undefined;
+      const event = session ? await storage.getEvent(session.eventId) : undefined;
+      if (event && !event.allowQuotes) {
+        return res.status(403).json({ error: "Quotes are disabled for this event." });
+      }
+      if (req.body.endMs !== null && req.body.endMs !== undefined && (req.body.startMs === null || req.body.startMs === undefined)) {
+        return res.status(400).json({ error: "startMs is required when endMs is provided." });
+      }
+      const quote = await storage.createQuote(req.body);
+      await storage.createAuditLog({
+        actor: "admin",
+        action: "create_quote",
+        entityType: "quote",
+        entityId: quote.id,
+        metadata: { tableId: quote.tableId, governance: quote.governance },
+      });
+      res.status(201).json(quote);
+    } catch (error) {
+      console.error("Error creating quote:", error);
+      res.status(500).json({ error: "Failed to create quote" });
+    }
+  });
+
+  app.patch("/api/quotes/:id", async (req: Request, res: Response) => {
+    try {
+      const quoteId = parseInt(req.params.id);
+      const existing = await storage.getQuote(quoteId);
+      if (!existing) {
+        return res.status(404).json({ error: "Quote not found" });
+      }
+      const table = await storage.getTable(existing.tableId);
+      const session = table ? await storage.getSession(table.sessionId) : undefined;
+      const event = session ? await storage.getEvent(session.eventId) : undefined;
+      if (event && !event.allowQuotes) {
+        return res.status(403).json({ error: "Quotes are disabled for this event." });
+      }
+      const quote = await storage.updateQuote(quoteId, req.body);
+      await storage.createAuditLog({
+        actor: "admin",
+        action: "update_quote",
+        entityType: "quote",
+        entityId: quote.id,
+        metadata: { governance: quote.governance },
+      });
+      res.json(quote);
+    } catch (error) {
+      console.error("Error updating quote:", error);
+      res.status(500).json({ error: "Failed to update quote" });
+    }
+  });
+
+  // Audit logs
+  app.get("/api/events/:id/audit-logs", async (req: Request, res: Response) => {
+    try {
+      const eventId = parseInt(req.params.id);
+      const logs = await storage.listAuditLogs(eventId);
+      res.json(logs);
+    } catch (error) {
+      console.error("Error fetching audit logs:", error);
+      res.status(500).json({ error: "Failed to fetch audit logs" });
+    }
+  });
+
+  // Nudge stats by event (inline table indicators)
+  app.get("/api/events/:id/nudge-stats", async (req: Request, res: Response) => {
+    try {
+      const eventId = parseInt(req.params.id);
+      const stats = await storage.getNudgeStatsByEvent(eventId);
+      res.json(stats);
+    } catch (error) {
+      console.error("Error fetching event nudge stats:", error);
+      res.status(500).json({ error: "Failed to fetch event nudge stats" });
+    }
+  });
+
+  // Explore investigations + collections
+  app.get("/api/events/:id/investigations", async (req: Request, res: Response) => {
+    try {
+      const eventId = parseInt(req.params.id);
+      const investigations = await storage.listInvestigations(eventId);
+      res.json(investigations);
+    } catch (error) {
+      console.error("Error fetching investigations:", error);
+      res.status(500).json({ error: "Failed to fetch investigations" });
+    }
+  });
+
+  app.post("/api/events/:id/investigations", async (req: Request, res: Response) => {
+    try {
+      const eventId = parseInt(req.params.id);
+      const investigation = await storage.createInvestigation({ ...req.body, eventId });
+      res.status(201).json(investigation);
+    } catch (error) {
+      console.error("Error creating investigation:", error);
+      res.status(500).json({ error: "Failed to create investigation" });
+    }
+  });
+
+  app.get("/api/events/:id/collections", async (req: Request, res: Response) => {
+    try {
+      const eventId = parseInt(req.params.id);
+      const collections = await storage.listCollections(eventId);
+      res.json(collections);
+    } catch (error) {
+      console.error("Error fetching collections:", error);
+      res.status(500).json({ error: "Failed to fetch collections" });
+    }
+  });
+
+  app.post("/api/events/:id/collections", async (req: Request, res: Response) => {
+    try {
+      const eventId = parseInt(req.params.id);
+      const collection = await storage.createCollection({ ...req.body, eventId });
+      res.status(201).json(collection);
+    } catch (error) {
+      console.error("Error creating collection:", error);
+      res.status(500).json({ error: "Failed to create collection" });
+    }
+  });
+
+  app.post("/api/collections/:id/items", async (req: Request, res: Response) => {
+    try {
+      const collectionId = parseInt(req.params.id);
+      const item = await storage.addCollectionItem({ ...req.body, collectionId });
+      res.status(201).json(item);
+    } catch (error) {
+      console.error("Error adding collection item:", error);
+      res.status(500).json({ error: "Failed to add collection item" });
+    }
+  });
+
+  // Golden nuggets by event
+  app.get("/api/events/:id/golden-nuggets", async (req: Request, res: Response) => {
+    try {
+      const eventId = parseInt(req.params.id);
+      const nuggets = await storage.listGoldenNuggetsByEvent(eventId);
+      res.json(nuggets);
+    } catch (error) {
+      console.error("Error fetching golden nuggets:", error);
+      res.status(500).json({ error: "Failed to fetch golden nuggets" });
+    }
+  });
+
+  // Open questions board
+  app.get("/api/events/:id/open-questions", async (req: Request, res: Response) => {
+    try {
+      const eventId = parseInt(req.params.id);
+      const questions = await storage.listOpenQuestionsByEvent(eventId);
+      const tables = await storage.getAllTables();
+      const sessions = await storage.getSessionsByEvent(eventId);
+      const tableMap = new Map(tables.map((table) => [table.id, table]));
+      const sessionMap = new Map(sessions.map((session) => [session.id, session]));
+      const queries = questions.map((question) => question.question.split(" ").slice(0, 6).join(" "));
+      const evidenceBatch = await storage.getEvidenceBatch(eventId, queries);
+      const evidenceMap = new Map(evidenceBatch.map((item) => [item.query, item]));
+      const withEvidence = await Promise.all(
+        questions.map(async (question) => {
+          const query = question.question.split(" ").slice(0, 6).join(" ");
+          const evidence = evidenceMap.get(query);
+          const topLine = evidence?.topLine ?? undefined;
+          const table = topLine?.tableId ? tableMap.get(topLine.tableId) : undefined;
+          const session = table ? sessionMap.get(table.sessionId) : undefined;
+          return {
+            ...question,
+            evidenceCount: evidence?.count ?? 0,
+            evidenceLineId: topLine?.id ?? null,
+            evidencePreview: topLine?.content ?? null,
+            evidenceSpeaker: topLine?.speakerTag ?? null,
+            evidenceAt: topLine?.createdAt ?? null,
+            tableId: topLine?.tableId ?? null,
+            tableNumber: table?.tableNumber ?? null,
+            sessionName: session?.name ?? null,
+          };
+        })
+      );
+      res.json(withEvidence);
+    } catch (error) {
+      console.error("Error fetching open questions:", error);
+      res.status(500).json({ error: "Failed to fetch open questions" });
+    }
+  });
+
+  app.post("/api/events/:id/open-questions", async (req: Request, res: Response) => {
+    try {
+      const eventId = parseInt(req.params.id);
+      const question = await storage.createOpenQuestion({ eventId, question: req.body.question });
+      res.status(201).json(question);
+    } catch (error) {
+      console.error("Error creating open question:", error);
+      res.status(500).json({ error: "Failed to create open question" });
+    }
+  });
+
+  app.get("/api/events/:id/pii-indicators", async (req: Request, res: Response) => {
+    try {
+      const eventId = parseInt(req.params.id);
+      const indicators = await storage.getPiiIndicatorsByEvent(eventId);
+      res.json(indicators);
+    } catch (error) {
+      console.error("Error fetching PII indicators:", error);
+      res.status(500).json({ error: "Failed to fetch PII indicators" });
+    }
+  });
+
+  app.get("/api/events/:id/transcript-completeness", async (req: Request, res: Response) => {
+    try {
+      const eventId = parseInt(req.params.id);
+      const tables = await storage.getAllTables();
+      const sessions = await storage.getSessionsByEvent(eventId);
+      const sessionMap = new Map(sessions.map((session) => [session.id, session]));
+      const tableMap = new Map(
+        tables
+          .filter((table) => sessionMap.has(table.sessionId))
+          .map((table) => [table.id, table])
+      );
+      const aggregates = await storage.getTranscriptCompletenessByEvent(eventId);
+      const enriched = await Promise.all(
+        aggregates.map(async (agg) => {
+          const table = tableMap.get(agg.tableId);
+          const session = table ? sessionMap.get(table.sessionId) : undefined;
+          const scheduledMinutes =
+            session?.startTime && session?.endTime
+              ? Math.max(1, Math.round((session.endTime.getTime() - session.startTime.getTime()) / 60000))
+              : null;
+          const capturedMinutes =
+            agg.firstAt && agg.lastAt
+              ? Math.max(1, Math.round((agg.lastAt.getTime() - agg.firstAt.getTime()) / 60000))
+              : 0;
+          const timestamps = await storage.getTranscriptLineTimestampsByTable(agg.tableId);
+          let gapCount = 0;
+          for (let i = 1; i < timestamps.length; i += 1) {
+            const prev = timestamps[i - 1];
+            const next = timestamps[i];
+            const gapMs = next.getTime() - prev.getTime();
+            if (gapMs > 120000) gapCount += 1;
+          }
+          return {
+            tableId: agg.tableId,
+            tableNumber: table?.tableNumber ?? null,
+            sessionName: session?.name ?? null,
+            scheduledMinutes,
+            capturedMinutes,
+            gapCount,
+            lastTranscriptAt: agg.lastAt,
+          };
+        })
+      );
+      res.json(enriched);
+    } catch (error) {
+      console.error("Error fetching transcript completeness:", error);
+      res.status(500).json({ error: "Failed to fetch transcript completeness" });
+    }
+  });
+
+  app.get("/api/events/:id/hot-tables", async (req: Request, res: Response) => {
+    try {
+      const eventId = parseInt(req.params.id);
+      const sinceMinutes = req.query.window ? parseInt(req.query.window as string, 10) : 5;
+      const rows = await storage.getHotTablesByEvent(eventId, sinceMinutes);
+      res.json(rows);
+    } catch (error) {
+      console.error("Error fetching hot tables:", error);
+      res.status(500).json({ error: "Failed to fetch hot tables" });
+    }
+  });
+
+  app.get("/api/events/:id/pulse-timeline", async (req: Request, res: Response) => {
+    try {
+      const eventId = parseInt(req.params.id);
+      const summaries = await storage.getAllSummariesForEvent(eventId);
+      const bucketMinutes = req.query.bucket ? parseInt(req.query.bucket as string, 10) : 15;
+      const buckets = new Map<string, { ts: string; total: number; count: number; confidence: number }>();
+      summaries.forEach((summary) => {
+        if (summary.sentimentScore === null || summary.sentimentConfidence === null) return;
+        const ts = summary.createdAt;
+        const rounded = new Date(ts);
+        rounded.setMinutes(Math.floor(rounded.getMinutes() / bucketMinutes) * bucketMinutes, 0, 0);
+        const key = rounded.toISOString();
+        const entry = buckets.get(key) || { ts: key, total: 0, count: 0, confidence: 0 };
+        entry.total += summary.sentimentScore || 0;
+        entry.confidence += summary.sentimentConfidence || 0;
+        entry.count += 1;
+        buckets.set(key, entry);
+      });
+      const timeline = Array.from(buckets.values())
+        .map((entry) => ({
+          timestamp: entry.ts,
+          averageSentiment: Math.round(entry.total / entry.count),
+          averageConfidence: Math.round(entry.confidence / entry.count),
+        }))
+        .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+      const labeled = timeline.map((entry, index) => {
+        if (index === 0) return { ...entry, label: null };
+        const delta = entry.averageSentiment - timeline[index - 1].averageSentiment;
+        if (Math.abs(delta) >= 15) {
+          return {
+            ...entry,
+            label: delta > 0 ? "Sentiment lift" : "Sentiment drop",
+          };
+        }
+        return { ...entry, label: null };
+      });
+      res.json(labeled);
+    } catch (error) {
+      console.error("Error fetching pulse timeline:", error);
+      res.status(500).json({ error: "Failed to fetch pulse timeline" });
+    }
+  });
+
+  app.get("/api/events/:id/sentiment-heatmap", async (req: Request, res: Response) => {
+    try {
+      const eventId = parseInt(req.params.id);
+      const summaries = await storage.getAllSummariesForEvent(eventId);
+      const tables = await storage.getAllTables();
+      const sessions = await storage.getSessionsByEvent(eventId);
+      const tableMap = new Map(tables.map((table) => [table.id, table]));
+      const sessionMap = new Map(sessions.map((session) => [session.id, session]));
+      const latestByTable = new Map<number, typeof summaries[number]>();
+      summaries.forEach((summary) => {
+        const existing = latestByTable.get(summary.tableId);
+        if (!existing || existing.createdAt < summary.createdAt) {
+          latestByTable.set(summary.tableId, summary);
+        }
+      });
+      const heatmap = Array.from(latestByTable.entries()).map(([tableId, summary]) => {
+        const table = tableMap.get(tableId);
+        const session = table ? sessionMap.get(table.sessionId) : undefined;
+        return {
+          tableId,
+          tableNumber: table?.tableNumber ?? null,
+          sessionId: session?.id ?? null,
+          sessionName: session?.name ?? null,
+          sentimentScore: summary.sentimentScore,
+          sentimentConfidence: summary.sentimentConfidence,
+          updatedAt: summary.createdAt,
+        };
+      });
+      res.json(heatmap);
+    } catch (error) {
+      console.error("Error fetching sentiment heatmap:", error);
+      res.status(500).json({ error: "Failed to fetch sentiment heatmap" });
+    }
+  });
+
+  app.get("/api/events/:id/consensus", async (req: Request, res: Response) => {
+    try {
+      const eventId = parseInt(req.params.id);
+      const summaries = await storage.getAllSummariesForEvent(eventId);
+      const themeStats = new Map<string, { values: number[]; count: number }>();
+      summaries.forEach((summary) => {
+        const themes = (summary.themes as string[]) || [];
+        themes.forEach((theme) => {
+          const entry = themeStats.get(theme) || { values: [], count: 0 };
+          if (summary.sentimentScore !== null) {
+            entry.values.push(summary.sentimentScore);
+          }
+          entry.count += 1;
+          themeStats.set(theme, entry);
+        });
+      });
+      const scored = Array.from(themeStats.entries()).map(([theme, entry]) => {
+        const avg = entry.values.length
+          ? entry.values.reduce((sum, value) => sum + value, 0) / entry.values.length
+          : 0;
+        const variance = entry.values.length
+          ? entry.values.reduce((sum, value) => sum + Math.pow(value - avg, 2), 0) / entry.values.length
+          : 0;
+        return { theme, count: entry.count, variance: Math.round(variance), avg: Math.round(avg) };
+      });
+      const consensus = scored
+        .filter((item) => item.count > 1)
+        .sort((a, b) => a.variance - b.variance)
+        .slice(0, 3);
+      const controversy = scored
+        .filter((item) => item.count > 1)
+        .sort((a, b) => b.variance - a.variance)
+        .slice(0, 3);
+      res.json({ consensus, controversy });
+    } catch (error) {
+      console.error("Error fetching consensus insights:", error);
+      res.status(500).json({ error: "Failed to fetch consensus insights" });
+    }
+  });
+
+  app.get("/api/events/:id/theme-clusters", async (req: Request, res: Response) => {
+    try {
+      const eventId = parseInt(req.params.id);
+      const summaries = await storage.getAllSummariesForEvent(eventId);
+      const themeCounts = new Map<string, number>();
+      summaries.forEach((summary) => {
+        const themes = (summary.themes as string[]) || [];
+        themes.forEach((theme) => {
+          themeCounts.set(theme, (themeCounts.get(theme) || 0) + 1);
+        });
+      });
+      const clusters = new Map<string, { cluster: string; themes: string[]; count: number }>();
+      Array.from(themeCounts.entries()).forEach(([theme, count]) => {
+        const key = theme.split(" ")[0]?.toLowerCase() || "other";
+        const entry = clusters.get(key) || { cluster: key, themes: [], count: 0 };
+        entry.themes.push(theme);
+        entry.count += count;
+        clusters.set(key, entry);
+      });
+      res.json(Array.from(clusters.values()).sort((a, b) => b.count - a.count).slice(0, 12));
+    } catch (error) {
+      console.error("Error fetching theme clusters:", error);
+      res.status(500).json({ error: "Failed to fetch theme clusters" });
+    }
+  });
+
+  app.post("/api/open-questions/:id/upvote", async (req: Request, res: Response) => {
+    try {
+      const questionId = parseInt(req.params.id);
+      const question = await storage.upvoteOpenQuestion(questionId);
+      if (!question) {
+        return res.status(404).json({ error: "Question not found" });
+      }
+      res.json(question);
+    } catch (error) {
+      console.error("Error upvoting question:", error);
+      res.status(500).json({ error: "Failed to upvote question" });
+    }
+  });
+
+  // Table handoff
+  app.post("/api/tables/:id/handoff", async (req: Request, res: Response) => {
+    try {
+      const tableId = parseInt(req.params.id);
+      const table = await storage.getTable(tableId);
+      if (!table) {
+        return res.status(404).json({ error: "Table not found" });
+      }
+      await storage.deactivateFacilitatorsByTable(tableId);
+      const facilitator = await storage.createFacilitator(tableId, req.body.deviceName);
+      res.json({ tableId, token: facilitator.token, joinCode: table.joinCode });
+    } catch (error) {
+      console.error("Error handing off table:", error);
+      res.status(500).json({ error: "Failed to hand off table" });
     }
   });
 
@@ -517,6 +1331,20 @@ Keep the summary concise and focused on the most important points.`,
     }
   });
 
+  app.patch("/api/events/:id", async (req: Request, res: Response) => {
+    try {
+      const eventId = parseInt(req.params.id);
+      const event = await storage.updateEvent(eventId, req.body);
+      if (!event) {
+        return res.status(404).json({ error: "Event not found" });
+      }
+      res.json(event);
+    } catch (error) {
+      console.error("Error updating event:", error);
+      res.status(500).json({ error: "Failed to update event" });
+    }
+  });
+
   app.get("/api/events/:id/sessions", async (req: Request, res: Response) => {
     try {
       const eventId = parseInt(req.params.id);
@@ -536,6 +1364,20 @@ Keep the summary concise and focused on the most important points.`,
     } catch (error) {
       console.error("Error creating session:", error);
       res.status(500).json({ error: "Failed to create session" });
+    }
+  });
+
+  app.patch("/api/sessions/:id", async (req: Request, res: Response) => {
+    try {
+      const sessionId = parseInt(req.params.id);
+      const session = await storage.updateSession(sessionId, req.body);
+      if (!session) {
+        return res.status(404).json({ error: "Session not found" });
+      }
+      res.json(session);
+    } catch (error) {
+      console.error("Error updating session:", error);
+      res.status(500).json({ error: "Failed to update session" });
     }
   });
 
@@ -638,6 +1480,51 @@ Keep the summary concise and focused on the most important points.`,
     }
   });
 
+  // Event table health (for dashboard left rail)
+  app.get("/api/events/:id/table-health", async (req: Request, res: Response) => {
+    try {
+      const eventId = parseInt(req.params.id);
+      const sessions = await storage.getSessionsByEvent(eventId);
+      const result = [];
+      for (const session of sessions) {
+        const tables = await storage.getTablesBySession(session.id);
+        tables.forEach((table) => {
+          result.push({
+            id: table.id,
+            sessionId: table.sessionId,
+            tableNumber: table.tableNumber,
+            topic: table.topic,
+            status: getHealthState(table.lastAudioAt ? new Date(table.lastAudioAt) : null),
+            lastAudioAt: table.lastAudioAt,
+            sessionName: session.name,
+          });
+        });
+      }
+      res.json(result);
+    } catch (error) {
+      console.error("Error fetching table health:", error);
+      res.status(500).json({ error: "Failed to fetch table health" });
+    }
+  });
+
+  // Admin alerts - tables with no usable audio
+  app.get("/api/admin/alerts", async (req: Request, res: Response) => {
+    try {
+      const thresholdSec = parseInt(req.query.thresholdSec as string, 10) || 60;
+      const allTables = await storage.getAllTables();
+      const now = Date.now();
+      const staleTables = allTables.filter((table) => {
+        if (!table.lastAudioAt) return true;
+        const diffMs = now - new Date(table.lastAudioAt).getTime();
+        return diffMs > thresholdSec * 1000;
+      });
+      res.json({ thresholdSec, tables: staleTables });
+    } catch (error) {
+      console.error("Error fetching alerts:", error);
+      res.status(500).json({ error: "Failed to fetch alerts" });
+    }
+  });
+
   // Broadcast nudge to all tables in a session
   app.post("/api/sessions/:id/broadcast-nudge", async (req: Request, res: Response) => {
     try {
@@ -672,6 +1559,8 @@ Keep the summary concise and focused on the most important points.`,
       if (!session) {
         return res.status(404).json({ error: "Session not found" });
       }
+      const event = await storage.getEvent(session.eventId);
+      const allowQuotes = event?.allowQuotes ?? false;
 
       const sessionTables = await storage.getTablesBySession(sessionId);
       const tableSummaries: Array<{
@@ -777,7 +1666,7 @@ Return a JSON object with these fields:
           keyInsights: result.keyInsights || [],
           overallSummary: result.overallSummary || "Summary generation complete.",
           detailedThemes: result.detailedThemes || [],
-          notableQuotes: result.notableQuotes || [],
+          notableQuotes: allowQuotes ? result.notableQuotes || [] : [],
           deeperInsights: result.deeperInsights || [],
         });
       } catch (aiError) {
@@ -898,6 +1787,7 @@ Return a JSON object with these fields:
       if (!event) {
         return res.status(404).json({ error: "Event not found" });
       }
+      const allowQuotes = event.allowQuotes ?? false;
 
       const eventSessions = await storage.getSessionsByEvent(eventId);
       const sessionSummaries: Array<{
@@ -1042,7 +1932,7 @@ Return a JSON object with these fields:
           keyInsights: result.keyInsights || [],
           overallSummary: result.overallSummary || "Event summary generation complete.",
           detailedThemes: result.detailedThemes || [],
-          notableQuotes: result.notableQuotes || [],
+          notableQuotes: allowQuotes ? result.notableQuotes || [] : [],
           deeperInsights: result.deeperInsights || [],
         });
       } catch (aiError) {
@@ -1065,6 +1955,440 @@ Return a JSON object with these fields:
     } catch (error) {
       console.error("Error fetching event aggregated summary:", error);
       res.status(500).json({ error: "Failed to fetch aggregated summary" });
+    }
+  });
+
+  // Event theme map
+  app.get("/api/events/:id/theme-map", async (req: Request, res: Response) => {
+    try {
+      const eventId = parseInt(req.params.id);
+      const event = await storage.getEvent(eventId);
+      if (!event) {
+        return res.status(404).json({ error: "Event not found" });
+      }
+      const summaries = await storage.getAllSummariesForEvent(eventId);
+      const themeCounts = new Map<string, number>();
+      summaries.forEach((summary) => {
+        const themes = (summary.themes as string[]) || [];
+        themes.forEach((theme) => {
+          themeCounts.set(theme, (themeCounts.get(theme) || 0) + 1);
+        });
+      });
+      const themeMap = Array.from(themeCounts.entries())
+        .map(([theme, count]) => ({ theme, count }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 20);
+      res.json({ eventName: event.name, themes: themeMap });
+    } catch (error) {
+      console.error("Error fetching theme map:", error);
+      res.status(500).json({ error: "Failed to fetch theme map" });
+    }
+  });
+
+  // Event sentiment pulse
+  app.get("/api/events/:id/pulse", async (req: Request, res: Response) => {
+    try {
+      const eventId = parseInt(req.params.id);
+      const summaries = await storage.getAllSummariesForEvent(eventId);
+      if (summaries.length === 0) {
+        return res.json({ averageSentiment: null, averageConfidence: null, samples: 0 });
+      }
+      const scored = summaries.filter((summary) => summary.sentimentScore !== null && summary.sentimentConfidence !== null);
+      if (scored.length === 0) {
+        return res.json({ averageSentiment: null, averageConfidence: null, samples: 0 });
+      }
+      const totalSentiment = scored.reduce((sum, s) => sum + (s.sentimentScore || 0), 0);
+      const totalConfidence = scored.reduce((sum, s) => sum + (s.sentimentConfidence || 0), 0);
+      res.json({
+        averageSentiment: Math.round(totalSentiment / scored.length),
+        averageConfidence: Math.round(totalConfidence / scored.length),
+        samples: scored.length,
+      });
+    } catch (error) {
+      console.error("Error fetching pulse:", error);
+      res.status(500).json({ error: "Failed to fetch pulse" });
+    }
+  });
+
+  // Redaction tasks
+  app.get("/api/redaction-tasks", async (req: Request, res: Response) => {
+    try {
+      const eventId = req.query.eventId ? parseInt(req.query.eventId as string, 10) : undefined;
+      const tasks = await storage.getPendingRedactionTasks(eventId);
+      res.json(tasks);
+    } catch (error) {
+      console.error("Error fetching redaction tasks:", error);
+      res.status(500).json({ error: "Failed to fetch redaction tasks" });
+    }
+  });
+
+  app.post("/api/redaction-tasks", async (req: Request, res: Response) => {
+    try {
+      const task = await storage.createRedactionTask(req.body);
+      res.status(201).json(task);
+    } catch (error) {
+      console.error("Error creating redaction task:", error);
+      res.status(500).json({ error: "Failed to create redaction task" });
+    }
+  });
+
+  app.patch("/api/redaction-tasks/:id", async (req: Request, res: Response) => {
+    try {
+      const taskId = parseInt(req.params.id);
+      const task = await storage.updateRedactionTask(taskId, req.body);
+      if (!task) {
+        return res.status(404).json({ error: "Redaction task not found" });
+      }
+      res.json(task);
+    } catch (error) {
+      console.error("Error updating redaction task:", error);
+      res.status(500).json({ error: "Failed to update redaction task" });
+    }
+  });
+
+  // Share links
+  app.post("/api/share-links", async (req: Request, res: Response) => {
+    try {
+      const token = generateShareToken();
+      const link = await storage.createShareLink({ ...req.body, token });
+      res.status(201).json(link);
+    } catch (error) {
+      console.error("Error creating share link:", error);
+      res.status(500).json({ error: "Failed to create share link" });
+    }
+  });
+
+  app.get("/api/share/:token", async (req: Request, res: Response) => {
+    try {
+      const link = await storage.getShareLinkByToken(req.params.token);
+      if (!link) {
+        return res.status(404).json({ error: "Share link not found" });
+      }
+      if (link.expiresAt && new Date(link.expiresAt).getTime() < Date.now()) {
+        return res.status(410).json({ error: "Share link expired" });
+      }
+      const sanitize = (summary: any) => {
+        if (link.role !== "sponsor") return summary;
+        return {
+          id: summary.id,
+          tableId: summary.tableId,
+          content: summary.content,
+          themes: summary.themes,
+          actionItems: summary.actionItems,
+          openQuestions: [],
+        };
+      };
+      if (link.eventId) {
+        const summaries = await storage.getAllSummariesForEvent(link.eventId);
+        return res.json({ role: link.role, summaries: summaries.map(sanitize) });
+      }
+      if (link.sessionId) {
+        const summaries = await storage.getAllSummariesForSession(link.sessionId);
+        return res.json({ role: link.role, summaries: summaries.map(sanitize) });
+      }
+      res.json({ role: link.role, summaries: [] });
+    } catch (error) {
+      console.error("Error fetching share link:", error);
+      res.status(500).json({ error: "Failed to fetch share link" });
+    }
+  });
+
+  // Exports
+  app.post("/api/exports", async (req: Request, res: Response) => {
+    try {
+      const job = await storage.createExportJob(req.body);
+      await storage.createAuditLog({
+        actor: req.body.requestedBy || "admin",
+        action: "export_requested",
+        entityType: "export",
+        entityId: job.id,
+        metadata: {
+          destination: job.destination,
+          eventId: job.eventId,
+          sessionId: job.sessionId,
+        },
+      });
+      res.status(201).json(job);
+    } catch (error) {
+      console.error("Error creating export job:", error);
+      res.status(500).json({ error: "Failed to create export job" });
+    }
+  });
+
+  app.patch("/api/exports/:id", async (req: Request, res: Response) => {
+    try {
+      const jobId = parseInt(req.params.id);
+      const job = await storage.updateExportJob(jobId, req.body);
+      if (!job) {
+        return res.status(404).json({ error: "Export job not found" });
+      }
+      res.json(job);
+    } catch (error) {
+      console.error("Error updating export job:", error);
+      res.status(500).json({ error: "Failed to update export job" });
+    }
+  });
+
+  // Attendee feedback
+  app.post("/api/attendee/feedback", async (req: Request, res: Response) => {
+    try {
+      const feedback = await storage.createAttendeeFeedback(req.body);
+      res.status(201).json(feedback);
+    } catch (error) {
+      console.error("Error creating feedback:", error);
+      res.status(500).json({ error: "Failed to create feedback" });
+    }
+  });
+
+  // Digest subscriptions
+  app.post("/api/events/:id/digest-subscribe", async (req: Request, res: Response) => {
+    try {
+      const eventId = parseInt(req.params.id);
+      const { contact, topic } = req.body;
+      const subscription = await storage.createDigestSubscription({ eventId, contact, topic });
+      res.status(201).json(subscription);
+    } catch (error) {
+      console.error("Error creating digest subscription:", error);
+      res.status(500).json({ error: "Failed to create digest subscription" });
+    }
+  });
+
+  // Search transcripts
+  app.get("/api/events/:id/search", async (req: Request, res: Response) => {
+    try {
+      const eventId = parseInt(req.params.id);
+      const query = (req.query.q as string) || "";
+      if (!query.trim()) {
+        return res.json({ results: [] });
+      }
+      const results = await storage.searchTranscripts(eventId, query.trim());
+      res.json({ results });
+    } catch (error) {
+      console.error("Error searching transcripts:", error);
+      res.status(500).json({ error: "Failed to search transcripts" });
+    }
+  });
+
+  // Ask Nutshell Q&A
+  app.post("/api/events/:id/ask", async (req: Request, res: Response) => {
+    try {
+      const eventId = parseInt(req.params.id);
+      const { question } = req.body;
+      const summaries = await storage.getAllSummariesForEvent(eventId);
+      const context = summaries.map((s) => s.content).join("\n\n").slice(0, 12000);
+      const response = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+          { role: "system", content: "Answer the question using the event summaries. Be concise and de-identified." },
+          { role: "user", content: `Question: ${question}\n\nSummaries:\n${context}` },
+        ],
+        max_completion_tokens: 600,
+      });
+      res.json({ answer: response.choices[0]?.message?.content || "" });
+    } catch (error) {
+      console.error("Error answering question:", error);
+      res.status(500).json({ error: "Failed to answer question" });
+    }
+  });
+
+  // Insight Pack generator
+  app.get("/api/events/:id/insight-pack", async (req: Request, res: Response) => {
+    try {
+      const eventId = parseInt(req.params.id);
+      const event = await storage.getEvent(eventId);
+      if (!event) {
+        return res.status(404).json({ error: "Event not found" });
+      }
+      const summaries = await storage.getAllSummariesForEvent(eventId);
+      const context = summaries.map((s) => s.content).join("\n\n").slice(0, 12000);
+      const response = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+          { role: "system", content: "Create a branded executive summary with top themes and action items. Return in markdown." },
+          { role: "user", content: `Event: ${event.name}\n\n${context}` },
+        ],
+        max_completion_tokens: 1200,
+      });
+      res.json({ title: `${event.name} Insight Pack`, content: response.choices[0]?.message?.content || "" });
+    } catch (error) {
+      console.error("Error generating insight pack:", error);
+      res.status(500).json({ error: "Failed to generate insight pack" });
+    }
+  });
+
+  // Follow-up recommendations
+  app.get("/api/events/:id/recommendations", async (req: Request, res: Response) => {
+    try {
+      const eventId = parseInt(req.params.id);
+      const summaries = await storage.getAllSummariesForEvent(eventId);
+      const context = summaries.map((s) => s.content).join("\n\n").slice(0, 12000);
+      const response = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+          { role: "system", content: "Suggest 5 follow-up session topics based on these summaries." },
+          { role: "user", content: context },
+        ],
+        max_completion_tokens: 400,
+      });
+      res.json({ recommendations: response.choices[0]?.message?.content || "" });
+    } catch (error) {
+      console.error("Error generating recommendations:", error);
+      res.status(500).json({ error: "Failed to generate recommendations" });
+    }
+  });
+
+  // Recap generator
+  app.get("/api/events/:id/recap", async (req: Request, res: Response) => {
+    try {
+      const eventId = parseInt(req.params.id);
+      const format = (req.query.format as string) || "text";
+      const summaries = await storage.getAllSummariesForEvent(eventId);
+      const content = summaries.map((s) => s.content).join("\n\n").slice(0, 12000);
+      if (format === "html") {
+        return res.send(`<html><body><h1>Event Recap</h1><pre>${content}</pre></body></html>`);
+      }
+      res.json({ content });
+    } catch (error) {
+      console.error("Error generating recap:", error);
+      res.status(500).json({ error: "Failed to generate recap" });
+    }
+  });
+
+  // Translate event summary
+  app.post("/api/events/:id/translate-summary", async (req: Request, res: Response) => {
+    try {
+      const eventId = parseInt(req.params.id);
+      const { language } = req.body;
+      const summary = await storage.getAllSummariesForEvent(eventId);
+      const content = summary.map((s) => s.content).join("\n\n").slice(0, 8000);
+      const response = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+          { role: "system", content: "Translate the following event summary accurately." },
+          { role: "user", content: `Language: ${language}\n\n${content}` },
+        ],
+        max_completion_tokens: 1200,
+      });
+      res.json({ translation: response.choices[0]?.message?.content || "" });
+    } catch (error) {
+      console.error("Error translating summary:", error);
+      res.status(500).json({ error: "Failed to translate summary" });
+    }
+  });
+
+  // Playbooks
+  app.get("/api/playbooks", async (_req: Request, res: Response) => {
+    try {
+      const playbooks = await storage.getPlaybooks();
+      res.json(playbooks);
+    } catch (error) {
+      console.error("Error fetching playbooks:", error);
+      res.status(500).json({ error: "Failed to fetch playbooks" });
+    }
+  });
+
+  app.post("/api/playbooks", async (req: Request, res: Response) => {
+    try {
+      const playbook = await storage.createPlaybook(req.body);
+      res.status(201).json(playbook);
+    } catch (error) {
+      console.error("Error creating playbook:", error);
+      res.status(500).json({ error: "Failed to create playbook" });
+    }
+  });
+
+  app.post("/api/playbooks/seed-defaults", async (_req: Request, res: Response) => {
+    try {
+      const existing = await storage.getPlaybooks();
+      if (existing.length > 0) {
+        return res.json({ created: 0, playbooks: existing });
+      }
+
+      const workshop45 = await storage.createPlaybook({
+        name: "45-min Workshop",
+        description: "Structured 45-minute session with time warnings and prompt shifts.",
+        durationMinutes: 45,
+      });
+      const roundtable90 = await storage.createPlaybook({
+        name: "90-min Roundtable",
+        description: "Extended roundtable with two prompt shifts and wrap-up nudges.",
+        durationMinutes: 90,
+      });
+
+      const steps = [
+        { playbookId: workshop45.id, offsetMinutes: 20, message: "Shift to next prompt", priority: "normal" },
+        { playbookId: workshop45.id, offsetMinutes: 35, message: "5 minutes remaining", priority: "urgent" },
+        { playbookId: workshop45.id, offsetMinutes: 40, message: "Please wrap up and capture takeaways", priority: "urgent" },
+        { playbookId: roundtable90.id, offsetMinutes: 30, message: "Check in: capture emerging themes", priority: "normal" },
+        { playbookId: roundtable90.id, offsetMinutes: 60, message: "Shift to final prompt", priority: "normal" },
+        { playbookId: roundtable90.id, offsetMinutes: 85, message: "5 minutes remaining", priority: "urgent" },
+      ];
+
+      const createdSteps = await Promise.all(steps.map((step) => storage.createPlaybookStep(step)));
+      res.json({ created: 2, playbooks: [workshop45, roundtable90], steps: createdSteps });
+    } catch (error) {
+      console.error("Error seeding playbooks:", error);
+      res.status(500).json({ error: "Failed to seed playbooks" });
+    }
+  });
+
+  app.get("/api/playbooks/:id/steps", async (req: Request, res: Response) => {
+    try {
+      const playbookId = parseInt(req.params.id);
+      const steps = await storage.getPlaybookSteps(playbookId);
+      res.json(steps);
+    } catch (error) {
+      console.error("Error fetching playbook steps:", error);
+      res.status(500).json({ error: "Failed to fetch playbook steps" });
+    }
+  });
+
+  app.post("/api/playbooks/:id/steps", async (req: Request, res: Response) => {
+    try {
+      const playbookId = parseInt(req.params.id);
+      const step = await storage.createPlaybookStep({ ...req.body, playbookId });
+      res.status(201).json(step);
+    } catch (error) {
+      console.error("Error creating playbook step:", error);
+      res.status(500).json({ error: "Failed to create playbook step" });
+    }
+  });
+
+  app.post("/api/sessions/:id/playbook/start", async (req: Request, res: Response) => {
+    try {
+      const sessionId = parseInt(req.params.id);
+      const { playbookId } = req.body;
+      const playbook = await storage.getPlaybook(playbookId);
+      if (!playbook) {
+        return res.status(404).json({ error: "Playbook not found" });
+      }
+      const steps = await storage.getPlaybookSteps(playbookId);
+      const tables = await storage.getTablesBySession(sessionId);
+      const session = await storage.getSession(sessionId);
+
+      const run = await storage.createPlaybookRun({ sessionId, playbookId });
+      const now = Date.now();
+
+      const nudges = await Promise.all(
+        steps.flatMap((step) =>
+          tables.map((table) =>
+            storage.createNudge({
+              eventId: session?.eventId,
+              sessionId,
+              tableId: table.id,
+              type: "playbook",
+              message: step.message,
+              priority: step.priority,
+              scheduledAt: new Date(now + step.offsetMinutes * 60000),
+            })
+          )
+        )
+      );
+
+      res.status(201).json({ run, nudges: nudges.flat() });
+    } catch (error) {
+      console.error("Error starting playbook:", error);
+      res.status(500).json({ error: "Failed to start playbook" });
     }
   });
 

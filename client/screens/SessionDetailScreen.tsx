@@ -58,6 +58,7 @@ export default function SessionDetailScreen() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showNudgeModal, setShowNudgeModal] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
+  const [showPlaybookModal, setShowPlaybookModal] = useState(false);
   const [selectedTableId, setSelectedTableId] = useState<number | null>(null);
   const [tableTopic, setTableTopic] = useState("");
   const [nudgeMessage, setNudgeMessage] = useState("");
@@ -65,6 +66,7 @@ export default function SessionDetailScreen() {
   const [nudgeError, setNudgeError] = useState<string | null>(null);
   const [csvInput, setCsvInput] = useState("");
   const [importError, setImportError] = useState<string | null>(null);
+  const [selectedPlaybookId, setSelectedPlaybookId] = useState<number | null>(null);
 
   const { data: session } = useQuery<Session>({
     queryKey: ["/api/sessions", sessionId],
@@ -73,6 +75,17 @@ export default function SessionDetailScreen() {
   const { data: tables, isLoading, refetch } = useQuery<Table[]>({
     queryKey: ["/api/sessions", sessionId, "tables"],
     refetchInterval: 10000,
+  });
+
+  const { data: playbooks } = useQuery<{ id: number; name: string; description: string | null }[]>({
+    queryKey: ["/api/playbooks"],
+  });
+
+  const seedPlaybooksMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/playbooks/seed-defaults");
+      return res.json();
+    },
   });
 
   const closeNudgeModal = () => {
@@ -89,7 +102,7 @@ export default function SessionDetailScreen() {
     setImportError(null);
   };
 
-  const { data: nudgeStats } = useQuery<{ sent: number; acknowledged: number; pending: number }>({
+  const { data: nudgeStats } = useQuery<{ sent: number; acknowledged: number; pending: number; delivered: number; opened: number }>({
     queryKey: ["/api/nudges/stats", sessionId],
     enabled: showNudgeModal,
     queryFn: async () => {
@@ -170,6 +183,24 @@ export default function SessionDetailScreen() {
       setImportError(error.message);
     },
   });
+
+  const startPlaybookMutation = useMutation({
+    mutationFn: async (playbookId: number) => {
+      const res = await apiRequest("POST", `/api/sessions/${sessionId}/playbook/start`, { playbookId });
+      return res.json();
+    },
+    onSuccess: () => {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setShowPlaybookModal(false);
+      setSelectedPlaybookId(null);
+    },
+  });
+
+  React.useEffect(() => {
+    if (playbooks && playbooks.length === 0) {
+      seedPlaybooksMutation.mutate();
+    }
+  }, [playbooks, seedPlaybooksMutation]);
 
   const openQrSheet = async () => {
     const url = new URL(`/api/sessions/${sessionId}/qr-sheet`, getApiUrl()).toString();
@@ -268,6 +299,18 @@ export default function SessionDetailScreen() {
             <Feather name="bell" size={18} color={theme.buttonText} />
             <ThemedText type="caption" style={{ color: theme.buttonText, fontWeight: "600" }}>
               Broadcast
+            </ThemedText>
+          </Pressable>
+          <Pressable
+            onPress={() => setShowPlaybookModal(true)}
+            style={({ pressed }) => [
+              styles.actionButton,
+              { backgroundColor: theme.backgroundSecondary, opacity: pressed ? 0.8 : 1 },
+            ]}
+          >
+            <Feather name="clock" size={18} color={theme.text} />
+            <ThemedText type="caption" style={{ color: theme.text, fontWeight: "600" }}>
+              Playbook
             </ThemedText>
           </Pressable>
           <Pressable
@@ -418,7 +461,7 @@ export default function SessionDetailScreen() {
         animationType="slide"
         onRequestClose={() => setShowCreateModal(false)}
       >
-        <Pressable style={styles.modalOverlay} onPress={() => setShowCreateModal(false)}>
+        <Pressable style={[styles.modalOverlay, { backgroundColor: theme.overlay }]} onPress={() => setShowCreateModal(false)}>
           <Pressable style={[styles.modalContent, { backgroundColor: theme.backgroundDefault }]} onPress={() => {}}>
             <View style={styles.modalHeader}>
               <ThemedText type="h4">Add Table</ThemedText>
@@ -468,7 +511,7 @@ export default function SessionDetailScreen() {
         animationType="slide"
         onRequestClose={closeNudgeModal}
       >
-        <Pressable style={styles.modalOverlay} onPress={closeNudgeModal}>
+        <Pressable style={[styles.modalOverlay, { backgroundColor: theme.overlay }]} onPress={closeNudgeModal}>
           <Pressable style={[styles.modalContent, { backgroundColor: theme.backgroundDefault }]} onPress={() => {}}>
             <View style={styles.modalHeader}>
               <ThemedText type="h4">
@@ -490,6 +533,12 @@ export default function SessionDetailScreen() {
                   </View>
                   <View style={[styles.statChip, { backgroundColor: theme.backgroundSecondary }]}>
                     <ThemedText type="caption">Pending: {nudgeStats.pending}</ThemedText>
+                  </View>
+                  <View style={[styles.statChip, { backgroundColor: theme.backgroundSecondary }]}>
+                    <ThemedText type="caption">Delivered: {nudgeStats.delivered}</ThemedText>
+                  </View>
+                  <View style={[styles.statChip, { backgroundColor: theme.backgroundSecondary }]}>
+                    <ThemedText type="caption">Opened: {nudgeStats.opened}</ThemedText>
                   </View>
                 </View>
               ) : null}
@@ -571,7 +620,7 @@ export default function SessionDetailScreen() {
         animationType="slide"
         onRequestClose={closeImportModal}
       >
-        <Pressable style={styles.modalOverlay} onPress={closeImportModal}>
+        <Pressable style={[styles.modalOverlay, { backgroundColor: theme.overlay }]} onPress={closeImportModal}>
           <Pressable style={[styles.modalContent, { backgroundColor: theme.backgroundDefault }]} onPress={() => {}}>
             <View style={styles.modalHeader}>
               <ThemedText type="h4">Import Table Topics (CSV)</ThemedText>
@@ -612,6 +661,69 @@ export default function SessionDetailScreen() {
               >
                 <ThemedText type="body" style={{ color: theme.buttonText, fontWeight: "600" }}>
                   {importCsvMutation.isPending ? "Importing..." : "Import Topics"}
+                </ThemedText>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <Modal
+        visible={showPlaybookModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowPlaybookModal(false)}
+      >
+        <Pressable style={[styles.modalOverlay, { backgroundColor: theme.overlay }]} onPress={() => setShowPlaybookModal(false)}>
+          <Pressable style={[styles.modalContent, { backgroundColor: theme.backgroundDefault }]} onPress={() => {}}>
+            <View style={styles.modalHeader}>
+              <ThemedText type="h4">Start Ops Playbook</ThemedText>
+              <Pressable onPress={() => setShowPlaybookModal(false)}>
+                <Feather name="x" size={24} color={theme.text} />
+              </Pressable>
+            </View>
+            <View style={styles.modalForm}>
+              {playbooks && playbooks.length > 0 ? (
+                playbooks.map((playbook) => (
+                  <Pressable
+                    key={playbook.id}
+                    onPress={() => setSelectedPlaybookId(playbook.id)}
+                    style={[
+                      styles.playbookRow,
+                      {
+                        backgroundColor:
+                          selectedPlaybookId === playbook.id
+                            ? theme.link + "20"
+                            : theme.backgroundSecondary,
+                      },
+                    ]}
+                  >
+                    <ThemedText type="body" style={{ fontWeight: "600" }}>
+                      {playbook.name}
+                    </ThemedText>
+                    {playbook.description ? (
+                      <ThemedText type="caption" style={{ color: theme.textMuted }}>
+                        {playbook.description}
+                      </ThemedText>
+                    ) : null}
+                  </Pressable>
+                ))
+              ) : (
+                <ThemedText type="body" style={{ color: theme.textMuted }}>
+                  Loading playbooks...
+                </ThemedText>
+              )}
+
+              <Pressable
+                onPress={() => selectedPlaybookId && startPlaybookMutation.mutate(selectedPlaybookId)}
+                disabled={!selectedPlaybookId || startPlaybookMutation.isPending}
+                style={({ pressed }) => [
+                  styles.modalButton,
+                  { backgroundColor: theme.link, opacity: !selectedPlaybookId || pressed ? 0.7 : 1 },
+                ]}
+              >
+                <ThemedText type="body" style={{ color: theme.buttonText, fontWeight: "600" }}>
+                  {startPlaybookMutation.isPending ? "Starting..." : "Start Playbook"}
                 </ThemedText>
               </Pressable>
             </View>
@@ -774,7 +886,6 @@ const styles = StyleSheet.create({
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.5)",
     justifyContent: "flex-end",
   },
   modalContent: {
@@ -823,6 +934,11 @@ const styles = StyleSheet.create({
     gap: Spacing.xs,
     padding: Spacing.sm,
     borderRadius: BorderRadius.md,
+  },
+  playbookRow: {
+    padding: Spacing.md,
+    borderRadius: BorderRadius.md,
+    gap: Spacing.xs,
   },
   quickNudges: {
     flexDirection: "row",

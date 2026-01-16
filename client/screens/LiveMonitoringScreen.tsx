@@ -31,6 +31,9 @@ interface ActiveTable {
   joinCode: string;
   status: string;
   lastActivityAt: string | null;
+  lastAudioAt?: string | null;
+  lastTranscriptAt?: string | null;
+  lastSummaryAt?: string | null;
   sessionName: string;
   eventName: string;
 }
@@ -60,7 +63,7 @@ export default function LiveMonitoringScreen() {
     setNudgeError(null);
   };
 
-  const { data: nudgeStats } = useQuery<{ sent: number; acknowledged: number; pending: number }>({
+  const { data: nudgeStats } = useQuery<{ sent: number; acknowledged: number; pending: number; delivered: number; opened: number }>({
     queryKey: ["/api/nudges/stats", selectedTable?.id],
     enabled: !!selectedTable && showNudgeModal,
     queryFn: async () => {
@@ -142,7 +145,7 @@ export default function LiveMonitoringScreen() {
         table.eventName.toLowerCase().includes(searchQuery.toLowerCase()) ||
         table.topic?.toLowerCase().includes(searchQuery.toLowerCase()) ||
         table.joinCode.toLowerCase().includes(searchQuery.toLowerCase());
-      const healthState = getHealthState(table.lastActivityAt);
+      const healthState = getHealthState(table.lastAudioAt ?? table.lastActivityAt);
       const matchesHealth = healthFilter === "all" ? true : healthState === healthFilter;
       return matchesSearch && matchesHealth;
     });
@@ -150,7 +153,7 @@ export default function LiveMonitoringScreen() {
 
   const alertTables = useMemo(() => {
     if (!activeTables) return [];
-    return activeTables.filter((table) => getHealthState(table.lastActivityAt) !== "healthy");
+    return activeTables.filter((table) => getHealthState(table.lastAudioAt ?? table.lastActivityAt) !== "healthy");
   }, [activeTables]);
 
   const hotTables = useMemo(() => {
@@ -261,7 +264,7 @@ export default function LiveMonitoringScreen() {
           <View style={styles.tableGrid}>
             {filteredTables.map((table) => {
               const activityLevel = getActivityLevel(table.lastActivityAt);
-              const healthState = getHealthState(table.lastActivityAt);
+              const healthState = getHealthState(table.lastAudioAt ?? table.lastActivityAt);
               return (
                 <Pressable
                   key={table.id}
@@ -294,6 +297,18 @@ export default function LiveMonitoringScreen() {
                       {table.topic}
                     </ThemedText>
                   ) : null}
+
+                  <View style={styles.freshnessRow}>
+                    <ThemedText type="caption" style={{ color: theme.textMuted }}>
+                      Audio {getTimeSince(table.lastAudioAt ?? null)}
+                    </ThemedText>
+                    <ThemedText type="caption" style={{ color: theme.textMuted }}>
+                      Transcript {getTimeSince(table.lastTranscriptAt ?? null)}
+                    </ThemedText>
+                    <ThemedText type="caption" style={{ color: theme.textMuted }}>
+                      Summary {getTimeSince(table.lastSummaryAt ?? null)}
+                    </ThemedText>
+                  </View>
 
                   <View style={styles.tableFooter}>
                     <View style={styles.timeInfo}>
@@ -331,7 +346,7 @@ export default function LiveMonitoringScreen() {
         animationType="slide"
         onRequestClose={closeNudgeModal}
       >
-        <Pressable style={styles.modalOverlay} onPress={closeNudgeModal}>
+        <Pressable style={[styles.modalOverlay, { backgroundColor: theme.overlay }]} onPress={closeNudgeModal}>
           <Pressable style={[styles.modalContent, { backgroundColor: theme.backgroundDefault }]} onPress={() => {}}>
             <View style={styles.modalHeader}>
               <ThemedText type="h4">
@@ -362,6 +377,12 @@ export default function LiveMonitoringScreen() {
                   </View>
                   <View style={[styles.statChip, { backgroundColor: theme.backgroundSecondary }]}>
                     <ThemedText type="caption">Pending: {nudgeStats.pending}</ThemedText>
+                  </View>
+                  <View style={[styles.statChip, { backgroundColor: theme.backgroundSecondary }]}>
+                    <ThemedText type="caption">Delivered: {nudgeStats.delivered}</ThemedText>
+                  </View>
+                  <View style={[styles.statChip, { backgroundColor: theme.backgroundSecondary }]}>
+                    <ThemedText type="caption">Opened: {nudgeStats.opened}</ThemedText>
                   </View>
                 </View>
               ) : null}
@@ -554,6 +575,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginTop: Spacing.sm,
   },
+  freshnessRow: {
+    marginTop: Spacing.xs,
+    gap: Spacing.xs,
+  },
   timeInfo: {
     flexDirection: "row",
     alignItems: "center",
@@ -573,7 +598,6 @@ const styles = StyleSheet.create({
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.5)",
     justifyContent: "flex-end",
   },
   modalContent: {

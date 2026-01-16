@@ -13,7 +13,7 @@ import Animated, {
 
 import { ThemedText } from "@/components/ThemedText";
 import { useTheme } from "@/hooks/useTheme";
-import { Spacing, BorderRadius } from "@/constants/theme";
+import { Spacing } from "@/constants/theme";
 
 interface NudgeData {
   id: number;
@@ -29,7 +29,7 @@ interface NudgeBannerProps {
 
 export function NudgeBanner({ nudge, onDismiss }: NudgeBannerProps) {
   const insets = useSafeAreaInsets();
-  const { theme } = useTheme();
+  const { theme, tokens } = useTheme();
   const shake = useSharedValue(0);
 
   React.useEffect(() => {
@@ -62,11 +62,11 @@ export function NudgeBanner({ nudge, onDismiss }: NudgeBannerProps) {
   const getBackgroundColor = () => {
     switch (nudge.priority) {
       case "urgent":
-        return theme.error;
+        return tokens.colors.error;
       case "high":
-        return theme.warning;
+        return tokens.colors.warning;
       default:
-        return theme.info;
+        return tokens.colors.info;
     }
   };
 
@@ -83,10 +83,19 @@ export function NudgeBanner({ nudge, onDismiss }: NudgeBannerProps) {
       ]}
     >
       <View style={styles.content}>
-        <View style={styles.iconContainer}>
-          <Feather name={getIcon()} size={20} color="#FFFFFF" />
+        <View
+          style={[
+            styles.iconContainer,
+            { backgroundColor: `${tokens.colors.primaryText}33` },
+          ]}
+        >
+          <Feather name={getIcon()} size={20} color={tokens.colors.primaryText} />
         </View>
-        <ThemedText type="body" style={styles.message} numberOfLines={2}>
+        <ThemedText
+          type="body"
+          style={[styles.message, { color: tokens.colors.primaryText }]}
+          numberOfLines={2}
+        >
           {nudge.message}
         </ThemedText>
         <Pressable
@@ -94,7 +103,7 @@ export function NudgeBanner({ nudge, onDismiss }: NudgeBannerProps) {
           style={({ pressed }) => [styles.dismissButton, { opacity: pressed ? 0.7 : 1 }]}
           hitSlop={12}
         >
-          <Feather name="x" size={20} color="#FFFFFF" />
+          <Feather name="x" size={20} color={tokens.colors.primaryText} />
         </Pressable>
       </View>
     </Animated.View>
@@ -120,13 +129,11 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: "rgba(255,255,255,0.2)",
     alignItems: "center",
     justifyContent: "center",
   },
   message: {
     flex: 1,
-    color: "#FFFFFF",
     fontWeight: "500",
   },
   dismissButton: {

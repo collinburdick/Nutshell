@@ -5,6 +5,8 @@ import {
   ScrollView,
   Pressable,
   Platform,
+  TextInput,
+  Modal,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
@@ -32,6 +34,7 @@ import { ConnectionStatus } from "@/components/ConnectionStatus";
 import { MicLevelIndicator } from "@/components/MicLevelIndicator";
 import { SessionTimer } from "@/components/SessionTimer";
 import { NudgeBanner } from "@/components/NudgeBanner";
+import { PulseRing } from "@/components/PulseRing";
 
 type NavigationProp = NativeStackNavigationProp<RootStackParamList, "Session">;
 type SessionRouteProp = RouteProp<RootStackParamList, "Session">;
@@ -42,6 +45,7 @@ interface TableData {
   topic: string;
   sessionName: string;
   discussionGuide: string[];
+  agendaPhases?: string[];
   status: string;
 }
 
@@ -50,6 +54,9 @@ interface SummaryData {
   themes: string[];
   actionItems: string[];
   openQuestions: string[];
+  sentimentScore: number | null;
+  sentimentConfidence: number | null;
+  missingAngles: string[];
   updatedAt: string;
 }
 
@@ -78,6 +85,13 @@ export default function SessionScreen() {
   const [transcriptionStatus, setTranscriptionStatus] = useState<string>("");
   const [recordingError, setRecordingError] = useState<string | null>(null);
   const [bufferedChunks, setBufferedChunks] = useState(0);
+  const [showParkingLotModal, setShowParkingLotModal] = useState(false);
+  const [showNuggetModal, setShowNuggetModal] = useState(false);
+  const [parkingLotText, setParkingLotText] = useState("");
+  const [nuggetText, setNuggetText] = useState("");
+  const [handsFree, setHandsFree] = useState(false);
+  const [showHandoffModal, setShowHandoffModal] = useState(false);
+  const [handoffCode, setHandoffCode] = useState<string | null>(null);
   
   const recordingRef = useRef<Audio.Recording | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -151,6 +165,41 @@ export default function SessionScreen() {
       console.error("Audio upload error:", error);
       setTranscriptionStatus("Transcription error");
       setTimeout(() => setTranscriptionStatus(""), 2000);
+    },
+  });
+
+  const parkingLotMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/tables/${tableId}/parking-lot`, { text: parkingLotText });
+      return res.json();
+    },
+    onSuccess: () => {
+      setParkingLotText("");
+      setShowParkingLotModal(false);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    },
+  });
+
+  const nuggetMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/tables/${tableId}/golden-nuggets`, { text: nuggetText });
+      return res.json();
+    },
+    onSuccess: () => {
+      setNuggetText("");
+      setShowNuggetModal(false);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    },
+  });
+
+  const handoffMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/tables/${tableId}/handoff`, { deviceName: "handoff" });
+      return res.json();
+    },
+    onSuccess: (data) => {
+      setHandoffCode(data.joinCode);
+      setShowHandoffModal(true);
     },
   });
 
@@ -550,6 +599,14 @@ export default function SessionScreen() {
     transform: [{ scale: pulseAnim.value }],
   }));
 
+  const micTip = !isRecording
+    ? null
+    : micLevel < 0.15
+      ? "Move the mic closer to the group."
+      : micLevel > 0.85
+        ? "Audio is very loud. Move the mic away."
+        : "Mic placement looks good.";
+
   useEffect(() => {
     let interval: NodeJS.Timeout | null = null;
 
@@ -655,15 +712,36 @@ export default function SessionScreen() {
             <ThemedText type="caption" style={{ color: theme.textSecondary }}>
               TABLE {tableData?.tableNumber || 1}
             </ThemedText>
-            <ConnectionStatus status={connectionStatus} />
+            <View style={styles.headerActions}>
+              <Pressable
+                onPress={() => setHandsFree((prev) => !prev)}
+                style={[styles.handsFreeToggle, { backgroundColor: theme.backgroundSecondary }]}
+              >
+                <Feather name="maximize" size={14} color={theme.text} />
+                <ThemedText type="caption" style={{ color: theme.text }}>
+                  {handsFree ? "Standard" : "Hands-free"}
+                </ThemedText>
+              </Pressable>
+              <ConnectionStatus status={connectionStatus} />
+            </View>
           </View>
           <ThemedText type="h2">{tableData?.sessionName || "Session"}</ThemedText>
         </View>
 
         <View style={styles.statusBar}>
           <SessionTimer startTime={sessionStartTime} isActive={isRecording && !isPaused} />
-          <MicLevelIndicator level={micLevel} isActive={isRecording && !isPaused} />
+          <View style={styles.pulseRingWrap}>
+            {isRecording && !isPaused ? <PulseRing size={44} strokeWidth={3} /> : null}
+            <View style={styles.pulseRingInner}>
+              <MicLevelIndicator level={micLevel} isActive={isRecording && !isPaused} />
+            </View>
+          </View>
         </View>
+        {micTip ? (
+          <ThemedText type="caption" style={{ color: theme.textMuted, marginBottom: Spacing.md }}>
+            {micTip}
+          </ThemedText>
+        ) : null}
 
         <View style={[styles.card, { backgroundColor: theme.backgroundSecondary }]}>
           <View style={styles.cardHeader}>
@@ -700,12 +778,37 @@ export default function SessionScreen() {
           </View>
         ) : null}
 
+        {tableData?.agendaPhases && tableData.agendaPhases.length > 0 ? (
+          <View style={[styles.card, { backgroundColor: theme.backgroundSecondary }]}>
+            <View style={styles.cardHeader}>
+              <Feather name="clock" size={18} color={theme.accent} />
+              <ThemedText type="h4" style={{ marginLeft: Spacing.sm }}>
+                AGENDA PHASES
+              </ThemedText>
+            </View>
+            <View style={styles.phasesRow}>
+              {tableData.agendaPhases.map((phase, index) => (
+                <View key={index} style={[styles.phaseChip, { backgroundColor: theme.backgroundRoot }]}>
+                  <ThemedText type="caption" style={{ color: theme.textSecondary }}>
+                    {phase}
+                  </ThemedText>
+                </View>
+              ))}
+            </View>
+          </View>
+        ) : null}
+
         <View style={[styles.card, { backgroundColor: theme.backgroundSecondary }]}>
           <View style={styles.cardHeader}>
             <Feather name="zap" size={18} color={theme.accent} />
             <ThemedText type="h4" style={{ marginLeft: Spacing.sm }}>
               LIVE SUMMARY
             </ThemedText>
+            {summaryData?.updatedAt ? (
+              <ThemedText type="caption" style={{ color: theme.textMuted, marginLeft: "auto" }}>
+                Updated {new Date(summaryData.updatedAt).toLocaleTimeString()}
+              </ThemedText>
+            ) : null}
           </View>
           {recordingError ? (
             <View style={[styles.errorBanner, { backgroundColor: theme.error + "20" }]}>
@@ -728,6 +831,18 @@ export default function SessionScreen() {
           <ThemedText type="body" style={{ marginTop: Spacing.sm, color: theme.textSecondary }}>
             {summaryData?.content || "Start recording to see live insights..."}
           </ThemedText>
+          {summaryData?.missingAngles && summaryData.missingAngles.length > 0 ? (
+            <View style={styles.missingAngles}>
+              <ThemedText type="caption" style={{ color: theme.textMuted }}>
+                WHAT'S MISSING
+              </ThemedText>
+              {summaryData.missingAngles.map((angle, index) => (
+                <ThemedText key={index} type="body" style={{ color: theme.textSecondary }}>
+                  • {angle}
+                </ThemedText>
+              ))}
+            </View>
+          ) : null}
           {summaryData?.themes && summaryData.themes.length > 0 ? (
             <View style={styles.themesContainer}>
               {summaryData.themes.map((t, i) => (
@@ -739,13 +854,65 @@ export default function SessionScreen() {
               ))}
             </View>
           ) : null}
+          {summaryData?.sentimentScore !== null && summaryData?.sentimentScore !== undefined ? (
+            <ThemedText type="caption" style={{ color: theme.textMuted, marginTop: Spacing.sm }}>
+              Sentiment: {summaryData.sentimentScore} (confidence {summaryData.sentimentConfidence ?? "—"})
+            </ThemedText>
+          ) : null}
+          <View style={styles.quickActions}>
+            <Pressable
+              onPress={() => setShowParkingLotModal(true)}
+              style={[styles.quickActionButton, { backgroundColor: theme.backgroundRoot }]}
+            >
+              <Feather name="bookmark" size={16} color={theme.textSecondary} />
+              <ThemedText type="caption" style={{ color: theme.textSecondary }}>
+                Parking Lot
+              </ThemedText>
+            </Pressable>
+            <Pressable
+              onPress={() => setShowNuggetModal(true)}
+              style={[styles.quickActionButton, { backgroundColor: theme.backgroundRoot }]}
+            >
+              <Feather name="star" size={16} color={theme.textSecondary} />
+              <ThemedText type="caption" style={{ color: theme.textSecondary }}>
+                Golden Nugget
+              </ThemedText>
+            </Pressable>
+            <Pressable
+              onPress={() => handoffMutation.mutate()}
+              style={[styles.quickActionButton, { backgroundColor: theme.backgroundRoot }]}
+            >
+              <Feather name="repeat" size={16} color={theme.textSecondary} />
+              <ThemedText type="caption" style={{ color: theme.textSecondary }}>
+                Handoff
+              </ThemedText>
+            </Pressable>
+          </View>
+        </View>
+
+        <View style={[styles.card, { backgroundColor: theme.backgroundSecondary }]}>
+          <View style={styles.cardHeader}>
+            <Feather name="shield" size={18} color={theme.accent} />
+            <ThemedText type="h4" style={{ marginLeft: Spacing.sm }}>
+              PRIVACY MODE
+            </ThemedText>
+          </View>
+          <ThemedText type="body" style={{ color: theme.textSecondary, marginTop: Spacing.xs }}>
+            De-identified capture is active. No names or personal info are stored.
+          </ThemedText>
         </View>
       </ScrollView>
 
       <View style={[styles.bottomControls, { paddingBottom: insets.bottom + Spacing.md }]}>
         {!isRecording ? (
           <Pressable
-            style={[styles.recordButton, { backgroundColor: theme.accent }]}
+            style={[
+              styles.recordButton,
+              {
+                backgroundColor: theme.accent,
+                paddingVertical: handsFree ? Spacing["2xl"] : Spacing.lg,
+              },
+            ]}
             onPress={startRecording}
           >
             <Animated.View style={[styles.micIconContainer, pulseStyle]}>
@@ -769,7 +936,13 @@ export default function SessionScreen() {
             </Pressable>
             
             <Pressable
-              style={[styles.endButton, { backgroundColor: theme.error }]}
+              style={[
+                styles.endButton,
+                {
+                  backgroundColor: theme.error,
+                  paddingVertical: handsFree ? Spacing["2xl"] : Spacing.lg,
+                },
+              ]}
               onPress={handleEndSession}
             >
               <Feather name="square" size={20} color={theme.buttonText} />
@@ -780,6 +953,112 @@ export default function SessionScreen() {
           </View>
         )}
       </View>
+
+      <Modal
+        visible={showParkingLotModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowParkingLotModal(false)}
+      >
+        <Pressable style={[styles.modalOverlay, { backgroundColor: theme.overlay }]} onPress={() => setShowParkingLotModal(false)}>
+          <Pressable style={[styles.modalContent, { backgroundColor: theme.backgroundSecondary }]} onPress={() => {}}>
+            <View style={styles.modalHeader}>
+              <ThemedText type="h4">Parking Lot</ThemedText>
+              <Pressable onPress={() => setShowParkingLotModal(false)}>
+                <Feather name="x" size={20} color={theme.text} />
+              </Pressable>
+            </View>
+            <TextInput
+              style={[
+                styles.modalInput,
+                { color: theme.text, backgroundColor: theme.backgroundSecondary, borderColor: theme.border, borderWidth: 1 },
+              ]}
+              placeholder="Capture an out-of-scope item..."
+              placeholderTextColor={theme.textMuted}
+              value={parkingLotText}
+              onChangeText={setParkingLotText}
+              multiline
+            />
+            <Pressable
+              onPress={() => parkingLotMutation.mutate()}
+              disabled={!parkingLotText.trim() || parkingLotMutation.isPending}
+              style={({ pressed }) => [
+                styles.modalButton,
+                { backgroundColor: theme.link, opacity: !parkingLotText.trim() || pressed ? 0.7 : 1 },
+              ]}
+            >
+              <ThemedText type="body" style={{ color: theme.buttonText }}>
+                Save
+              </ThemedText>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <Modal
+        visible={showNuggetModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowNuggetModal(false)}
+      >
+        <Pressable style={[styles.modalOverlay, { backgroundColor: theme.overlay }]} onPress={() => setShowNuggetModal(false)}>
+          <Pressable style={[styles.modalContent, { backgroundColor: theme.backgroundSecondary }]} onPress={() => {}}>
+            <View style={styles.modalHeader}>
+              <ThemedText type="h4">Golden Nugget</ThemedText>
+              <Pressable onPress={() => setShowNuggetModal(false)}>
+                <Feather name="x" size={20} color={theme.text} />
+              </Pressable>
+            </View>
+            <TextInput
+              style={[
+                styles.modalInput,
+                { color: theme.text, backgroundColor: theme.backgroundSecondary, borderColor: theme.border, borderWidth: 1 },
+              ]}
+              placeholder="Mark a standout insight..."
+              placeholderTextColor={theme.textMuted}
+              value={nuggetText}
+              onChangeText={setNuggetText}
+              multiline
+            />
+            <Pressable
+              onPress={() => nuggetMutation.mutate()}
+              disabled={!nuggetText.trim() || nuggetMutation.isPending}
+              style={({ pressed }) => [
+                styles.modalButton,
+                { backgroundColor: theme.link, opacity: !nuggetText.trim() || pressed ? 0.7 : 1 },
+              ]}
+            >
+              <ThemedText type="body" style={{ color: theme.buttonText }}>
+                Save
+              </ThemedText>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <Modal
+        visible={showHandoffModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowHandoffModal(false)}
+      >
+        <Pressable style={[styles.modalOverlay, { backgroundColor: theme.overlay }]} onPress={() => setShowHandoffModal(false)}>
+          <Pressable style={[styles.modalContent, { backgroundColor: theme.backgroundSecondary }]} onPress={() => {}}>
+            <View style={styles.modalHeader}>
+              <ThemedText type="h4">Handoff Code</ThemedText>
+              <Pressable onPress={() => setShowHandoffModal(false)}>
+                <Feather name="x" size={20} color={theme.text} />
+              </Pressable>
+            </View>
+            <ThemedText type="body" style={{ color: theme.textSecondary }}>
+              Share this code with the new device to continue capturing.
+            </ThemedText>
+            <View style={[styles.handoffCode, { backgroundColor: theme.backgroundRoot }]}>
+              <ThemedText type="h3">{handoffCode || "—"}</ThemedText>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </ThemedView>
   );
 }
@@ -808,11 +1087,33 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginBottom: Spacing.xs,
   },
+  headerActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.sm,
+  },
+  handsFreeToggle: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.xs,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: Spacing.xs,
+    borderRadius: BorderRadius.full,
+  },
   statusBar: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
     marginBottom: Spacing.lg,
+  },
+  pulseRingWrap: {
+    width: 44,
+    height: 44,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  pulseRingInner: {
+    position: "absolute",
   },
   card: {
     padding: Spacing.lg,
@@ -836,6 +1137,17 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
   },
+  phasesRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: Spacing.xs,
+    marginTop: Spacing.sm,
+  },
+  phaseChip: {
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: Spacing.xs,
+    borderRadius: BorderRadius.full,
+  },
   themesContainer: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -843,6 +1155,23 @@ const styles = StyleSheet.create({
     gap: Spacing.xs,
   },
   themeTag: {
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: Spacing.xs,
+    borderRadius: BorderRadius.sm,
+  },
+  missingAngles: {
+    marginTop: Spacing.md,
+    gap: Spacing.xs,
+  },
+  quickActions: {
+    flexDirection: "row",
+    gap: Spacing.sm,
+    marginTop: Spacing.md,
+  },
+  quickActionButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.xs,
     paddingHorizontal: Spacing.sm,
     paddingVertical: Spacing.xs,
     borderRadius: BorderRadius.sm,
@@ -897,5 +1226,37 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     paddingVertical: Spacing.lg,
     borderRadius: BorderRadius.lg,
+  },
+  modalOverlay: {
+    flex: 1,
+    justifyContent: "flex-end",
+  },
+  modalContent: {
+    borderTopLeftRadius: BorderRadius.xl,
+    borderTopRightRadius: BorderRadius.xl,
+    padding: Spacing.lg,
+    gap: Spacing.md,
+  },
+  modalHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  modalInput: {
+    minHeight: 100,
+    borderRadius: BorderRadius.md,
+    padding: Spacing.md,
+  },
+  modalButton: {
+    height: 48,
+    borderRadius: BorderRadius.md,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  handoffCode: {
+    padding: Spacing.lg,
+    borderRadius: BorderRadius.md,
+    alignItems: "center",
+    marginTop: Spacing.md,
   },
 });

@@ -31,6 +31,10 @@ interface WrapUpData {
   openQuestions: string[];
 }
 
+interface TableInfo {
+  discussionGuide: string[];
+}
+
 interface InsightItem {
   id: string;
   text: string;
@@ -52,6 +56,14 @@ export default function WrapUpScreen() {
 
   const { data: wrapUpData, isLoading } = useQuery<WrapUpData>({
     queryKey: ["/api/tables", tableId, "wrapup"],
+  });
+
+  const { data: tableInfo } = useQuery<TableInfo>({
+    queryKey: ["/api/tables", tableId],
+  });
+
+  const { data: closingScript } = useQuery<{ script: string }>({
+    queryKey: ["/api/tables", tableId, "closing-script"],
   });
 
   React.useEffect(() => {
@@ -190,6 +202,39 @@ export default function WrapUpScreen() {
         {renderInsightSection("Action Items", "check-circle", actionItems, setActionItems)}
         {renderInsightSection("Open Questions", "help-circle", openQuestions, setOpenQuestions)}
 
+        {tableInfo?.discussionGuide && tableInfo.discussionGuide.length > 0 ? (
+          <View style={[styles.section, { backgroundColor: theme.backgroundDefault }]}>
+            <View style={styles.sectionHeader}>
+              <Feather name="check-square" size={18} color={theme.link} />
+              <ThemedText type="small" style={{ color: theme.textSecondary, fontWeight: "600" }}>
+                PROMPT COVERAGE CHECKLIST
+              </ThemedText>
+            </View>
+            {tableInfo.discussionGuide.map((prompt, index) => (
+              <View key={index} style={styles.checklistItem}>
+                <Feather name="square" size={16} color={theme.border} />
+                <ThemedText type="body" style={{ marginLeft: Spacing.sm }}>
+                  {prompt}
+                </ThemedText>
+              </View>
+            ))}
+          </View>
+        ) : null}
+
+        {closingScript?.script ? (
+          <View style={[styles.section, { backgroundColor: theme.backgroundDefault }]}>
+            <View style={styles.sectionHeader}>
+              <Feather name="message-square" size={18} color={theme.link} />
+              <ThemedText type="small" style={{ color: theme.textSecondary, fontWeight: "600" }}>
+                CLOSING SCRIPT
+              </ThemedText>
+            </View>
+            <ThemedText type="body" style={{ color: theme.textSecondary }}>
+              {closingScript.script}
+            </ThemedText>
+          </View>
+        ) : null}
+
         <View style={{ height: 100 }} />
       </ScrollView>
 
@@ -278,6 +323,11 @@ const styles = StyleSheet.create({
   emptySection: {
     paddingVertical: Spacing.xl,
     alignItems: "center",
+  },
+  checklistItem: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    marginTop: Spacing.sm,
   },
   footer: {
     paddingHorizontal: Spacing.lg,

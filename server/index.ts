@@ -3,6 +3,7 @@ import type { Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import * as fs from "fs";
 import * as path from "path";
+import { pool } from "./db";
 
 const app = express();
 const log = console.log;
@@ -228,6 +229,17 @@ function setupErrorHandler(app: express.Application) {
   setupRequestLogging(app);
 
   configureExpoAndLanding(app);
+
+  try {
+    await pool.query(
+      "CREATE INDEX IF NOT EXISTS transcript_lines_content_gin ON transcript_lines USING gin (to_tsvector('english', content))"
+    );
+    await pool.query(
+      "CREATE INDEX IF NOT EXISTS transcripts_content_gin ON transcripts USING gin (to_tsvector('english', content))"
+    );
+  } catch (error) {
+    log("Failed to create transcript search index", error);
+  }
 
   const server = await registerRoutes(app);
 

@@ -5,6 +5,7 @@
     "esModuleInterop": true,
     "paths": {
       "@/*": ["./client/*"],
+      "@/theme/*": ["./src/theme/*"],
       "@shared/*": ["./shared/*"]
     },
     "types": ["node"]

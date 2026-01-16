@@ -9,6 +9,7 @@ module.exports = function (api) {
           root: ["./"],
           alias: {
             "@": "./client",
+            "@/theme": "./src/theme",
             "@shared": "./shared",
           },
           extensions: [".ios.js", ".android.js", ".js", ".ts", ".tsx", ".json"],
