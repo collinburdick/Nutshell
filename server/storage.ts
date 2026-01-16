@@ -61,6 +61,8 @@ export interface IStorage {
   getPendingNudges(tableId: number): Promise<Nudge[]>;
   createNudge(data: InsertNudge): Promise<Nudge>;
   acknowledgeNudge(id: number): Promise<void>;
+  getNudgeStatsByTable(tableId: number): Promise<{ sent: number; acknowledged: number; pending: number }>;
+  getNudgeStatsBySession(sessionId: number): Promise<{ sent: number; acknowledged: number; pending: number }>;
 
   // Admin
   getAllActiveTables(): Promise<Array<Table & { sessionName: string; eventName: string }>>;
@@ -213,6 +215,38 @@ export class DatabaseStorage implements IStorage {
 
   async acknowledgeNudge(id: number): Promise<void> {
     await db.update(nudges).set({ acknowledgedAt: sql`CURRENT_TIMESTAMP` }).where(eq(nudges.id, id));
+  }
+
+  async getNudgeStatsByTable(tableId: number): Promise<{ sent: number; acknowledged: number; pending: number }> {
+    const [{ count: sent }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(nudges)
+      .where(eq(nudges.tableId, tableId));
+    const [{ count: acknowledged }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(nudges)
+      .where(and(eq(nudges.tableId, tableId), sql`${nudges.acknowledgedAt} is not null`));
+    const [{ count: pending }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(nudges)
+      .where(and(eq(nudges.tableId, tableId), isNull(nudges.acknowledgedAt)));
+    return { sent, acknowledged, pending };
+  }
+
+  async getNudgeStatsBySession(sessionId: number): Promise<{ sent: number; acknowledged: number; pending: number }> {
+    const [{ count: sent }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(nudges)
+      .where(eq(nudges.sessionId, sessionId));
+    const [{ count: acknowledged }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(nudges)
+      .where(and(eq(nudges.sessionId, sessionId), sql`${nudges.acknowledgedAt} is not null`));
+    const [{ count: pending }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(nudges)
+      .where(and(eq(nudges.sessionId, sessionId), isNull(nudges.acknowledgedAt)));
+    return { sent, acknowledged, pending };
   }
 
   // Admin

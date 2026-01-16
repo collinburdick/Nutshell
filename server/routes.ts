@@ -11,6 +11,9 @@ const openai = new OpenAI({
 
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "nutshell2026";
 const adminTokens = new Map<string, { createdAt: Date }>();
+const nudgeRateLimit = new Map<string, number>();
+const NUDGE_RATE_LIMIT_MS = 30000;
+const BROADCAST_RATE_LIMIT_MS = 60000;
 
 function generateAdminToken(): string {
   return crypto.randomBytes(32).toString("hex");
@@ -25,6 +28,128 @@ function validateAdminToken(token: string): boolean {
     return false;
   }
   return true;
+}
+
+function canSendNudge(key: string, limitMs: number): boolean {
+  const lastSentAt = nudgeRateLimit.get(key);
+  if (!lastSentAt) return true;
+  return Date.now() - lastSentAt >= limitMs;
+}
+
+function markNudgeSent(key: string) {
+  nudgeRateLimit.set(key, Date.now());
+}
+
+function parseCsvRows(rawCsv: string): string[][] {
+  const rows: string[][] = [];
+  let currentRow: string[] = [];
+  let currentField = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < rawCsv.length; i++) {
+    const char = rawCsv[i];
+    if (char === '"') {
+      if (inQuotes && rawCsv[i + 1] === '"') {
+        currentField += '"';
+        i += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+    if (char === "," && !inQuotes) {
+      currentRow.push(currentField.trim());
+      currentField = "";
+      continue;
+    }
+    if ((char === "\n" || char === "\r") && !inQuotes) {
+      if (currentField.length || currentRow.length) {
+        currentRow.push(currentField.trim());
+        rows.push(currentRow);
+        currentRow = [];
+        currentField = "";
+      }
+      continue;
+    }
+    currentField += char;
+  }
+
+  if (currentField.length || currentRow.length) {
+    currentRow.push(currentField.trim());
+    rows.push(currentRow);
+  }
+
+  return rows.filter((row) => row.some((value) => value.length > 0));
+}
+
+function buildQrSheetHtml(title: string, rows: Array<{ tableNumber: number; topic: string | null; joinCode: string }>, baseUrl: string) {
+  const tableCards = rows
+    .map(
+      (row) => `
+      <div class="card" data-code="${row.joinCode}" data-url="${baseUrl}?code=${row.joinCode}">
+        <div class="card-header">
+          <div class="table-number">Table ${row.tableNumber}</div>
+          <div class="code">${row.joinCode}</div>
+        </div>
+        ${row.topic ? `<div class="topic">${row.topic}</div>` : ""}
+        <div class="qr"></div>
+        <div class="hint">Scan or enter code in the Nutshell app</div>
+      </div>
+    `
+    )
+    .join("\n");
+
+  return `<!doctype html>
+  <html>
+    <head>
+      <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <title>${title} QR Sheet</title>
+      <style>
+        body { font-family: "Helvetica Neue", Arial, sans-serif; background: #f7f4ef; margin: 0; padding: 32px; color: #1b1b1b; }
+        h1 { font-size: 28px; margin-bottom: 8px; }
+        p { margin-top: 0; color: #4b4b4b; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; }
+        .card { background: #ffffff; border-radius: 16px; padding: 16px; border: 1px solid #e3ded6; box-shadow: 0 8px 20px rgba(0,0,0,0.06); }
+        .card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+        .table-number { font-weight: 700; font-size: 14px; text-transform: uppercase; letter-spacing: 0.08em; color: #8b6b3f; }
+        .code { font-weight: 700; font-size: 18px; letter-spacing: 0.2em; }
+        .topic { font-size: 13px; margin-bottom: 8px; color: #3f3a35; }
+        .qr { display: flex; justify-content: center; align-items: center; margin: 8px 0; min-height: 140px; }
+        .hint { font-size: 11px; color: #6b6b6b; text-align: center; }
+        @media print { body { padding: 12px; } .card { break-inside: avoid; } }
+      </style>
+    </head>
+    <body>
+      <h1>${title} QR Sheet</h1>
+      <p>Print these codes for facilitators to join quickly.</p>
+      <div class="grid">
+        ${tableCards}
+      </div>
+      <script src="https://unpkg.com/qr-code-styling@1.6.0/lib/qr-code-styling.js"></script>
+      <script>
+        document.querySelectorAll(".card").forEach(card => {
+          const code = card.dataset.code;
+          const url = card.dataset.url || code;
+          const qrContainer = card.querySelector(".qr");
+          if (!window.QRCodeStyling || !qrContainer) {
+            qrContainer.textContent = code;
+            return;
+          }
+          const qrCode = new QRCodeStyling({
+            width: 140,
+            height: 140,
+            data: url,
+            dotsOptions: { color: "#1b1b1b", type: "rounded" },
+            cornersSquareOptions: { color: "#8b6b3f", type: "extra-rounded" },
+            cornersDotOptions: { color: "#8b6b3f", type: "dot" },
+            backgroundOptions: { color: "#ffffff" }
+          });
+          qrCode.append(qrContainer);
+        });
+      </script>
+    </body>
+  </html>`;
 }
 
 export async function registerRoutes(app: Express): Promise<Server> {
@@ -42,6 +167,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.error("Admin login error:", error);
       res.status(500).json({ error: "Login failed" });
     }
+  });
+
+  app.get("/api/ping", (_req: Request, res: Response) => {
+    res.json({ ok: true, now: Date.now() });
   });
 
   app.post("/api/admin/verify", async (req: Request, res: Response) => {
@@ -435,11 +564,36 @@ Keep the summary concise and focused on the most important points.`,
   // Admin nudge routes
   app.post("/api/nudges", async (req: Request, res: Response) => {
     try {
+      const key = req.body.tableId ? `table:${req.body.tableId}` : `session:${req.body.sessionId || "unknown"}`;
+      if (!canSendNudge(key, NUDGE_RATE_LIMIT_MS)) {
+        return res.status(429).json({ error: "Nudge rate limit exceeded. Try again shortly." });
+      }
       const nudge = await storage.createNudge(req.body);
+      markNudgeSent(key);
       res.status(201).json(nudge);
     } catch (error) {
       console.error("Error creating nudge:", error);
       res.status(500).json({ error: "Failed to create nudge" });
+    }
+  });
+
+  app.get("/api/nudges/stats", async (req: Request, res: Response) => {
+    try {
+      const tableId = req.query.tableId ? parseInt(req.query.tableId as string, 10) : null;
+      const sessionId = req.query.sessionId ? parseInt(req.query.sessionId as string, 10) : null;
+
+      if (tableId) {
+        const stats = await storage.getNudgeStatsByTable(tableId);
+        return res.json(stats);
+      }
+      if (sessionId) {
+        const stats = await storage.getNudgeStatsBySession(sessionId);
+        return res.json(stats);
+      }
+      return res.status(400).json({ error: "tableId or sessionId is required" });
+    } catch (error) {
+      console.error("Error fetching nudge stats:", error);
+      res.status(500).json({ error: "Failed to fetch nudge stats" });
     }
   });
 
@@ -489,6 +643,10 @@ Keep the summary concise and focused on the most important points.`,
     try {
       const sessionId = parseInt(req.params.id);
       const { type, message, priority } = req.body;
+      const key = `broadcast:${sessionId}`;
+      if (!canSendNudge(key, BROADCAST_RATE_LIMIT_MS)) {
+        return res.status(429).json({ error: "Broadcast rate limit exceeded. Try again shortly." });
+      }
       const tables = await storage.getTablesBySession(sessionId);
       
       const nudges = await Promise.all(
@@ -496,6 +654,7 @@ Keep the summary concise and focused on the most important points.`,
           storage.createNudge({ tableId: table.id, sessionId, type, message, priority })
         )
       );
+      markNudgeSent(key);
       
       res.status(201).json({ count: nudges.length, nudges });
     } catch (error) {
@@ -640,6 +799,93 @@ Return a JSON object with these fields:
     } catch (error) {
       console.error("Error fetching session aggregated summary:", error);
       res.status(500).json({ error: "Failed to fetch aggregated summary" });
+    }
+  });
+
+  app.post("/api/sessions/:id/tables/import-csv", async (req: Request, res: Response) => {
+    try {
+      const sessionId = parseInt(req.params.id);
+      const { csv } = req.body;
+      if (!csv || typeof csv !== "string") {
+        return res.status(400).json({ error: "CSV content is required" });
+      }
+
+      const session = await storage.getSession(sessionId);
+      if (!session) {
+        return res.status(404).json({ error: "Session not found" });
+      }
+
+      const rows = parseCsvRows(csv);
+      const errors: Array<{ row: number; message: string }> = [];
+      const createdTables = [];
+      let nextTableNumber = 1;
+
+      const existingTables = await storage.getTablesBySession(sessionId);
+      if (existingTables.length > 0) {
+        const maxExisting = Math.max(...existingTables.map((t) => t.tableNumber));
+        nextTableNumber = maxExisting + 1;
+      }
+
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        if (row.length === 0) continue;
+
+        let tableNumber: number | null = null;
+        let topic = "";
+
+        if (row.length === 1) {
+          topic = row[0];
+        } else {
+          const parsedNumber = parseInt(row[0], 10);
+          if (!Number.isNaN(parsedNumber)) {
+            tableNumber = parsedNumber;
+            topic = row.slice(1).join(",").trim();
+          } else {
+            topic = row.join(",").trim();
+          }
+        }
+
+        if (!topic) {
+          errors.push({ row: i + 1, message: "Missing topic" });
+          continue;
+        }
+
+        const numberToUse = tableNumber ?? nextTableNumber++;
+        const created = await storage.createTable({
+          sessionId,
+          tableNumber: numberToUse,
+          topic,
+          status: "inactive",
+        });
+        createdTables.push(created);
+      }
+
+      res.status(201).json({
+        created: createdTables.length,
+        errors,
+        tables: createdTables,
+      });
+    } catch (error) {
+      console.error("Error importing CSV:", error);
+      res.status(500).json({ error: "Failed to import CSV" });
+    }
+  });
+
+  app.get("/api/sessions/:id/qr-sheet", async (req: Request, res: Response) => {
+    try {
+      const sessionId = parseInt(req.params.id);
+      const session = await storage.getSession(sessionId);
+      if (!session) {
+        return res.status(404).send("Session not found");
+      }
+      const tables = await storage.getTablesBySession(sessionId);
+      const baseUrl = `https://${process.env.EXPO_PUBLIC_DOMAIN}`;
+      const html = buildQrSheetHtml(session.name, tables, baseUrl);
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.send(html);
+    } catch (error) {
+      console.error("Error generating QR sheet:", error);
+      res.status(500).send("Failed to generate QR sheet");
     }
   });
 

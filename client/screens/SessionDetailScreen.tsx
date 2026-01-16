@@ -15,6 +15,7 @@ import { Feather } from "@expo/vector-icons";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import * as Haptics from "expo-haptics";
 import * as Clipboard from "expo-clipboard";
+import * as WebBrowser from "expo-web-browser";
 import { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useNavigation, useRoute, RouteProp } from "@react-navigation/native";
 
@@ -22,7 +23,7 @@ import { ThemedView } from "@/components/ThemedView";
 import { ThemedText } from "@/components/ThemedText";
 import { useTheme } from "@/hooks/useTheme";
 import { Spacing, BorderRadius, Shadows } from "@/constants/theme";
-import { apiRequest } from "@/lib/query-client";
+import { apiRequest, getApiUrl } from "@/lib/query-client";
 import { RootStackParamList } from "@/navigation/RootStackNavigator";
 
 type NavigationProp = NativeStackNavigationProp<RootStackParamList, "SessionDetail">;
@@ -56,9 +57,14 @@ export default function SessionDetailScreen() {
 
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showNudgeModal, setShowNudgeModal] = useState(false);
+  const [showImportModal, setShowImportModal] = useState(false);
   const [selectedTableId, setSelectedTableId] = useState<number | null>(null);
   const [tableTopic, setTableTopic] = useState("");
   const [nudgeMessage, setNudgeMessage] = useState("");
+  const [isEmergency, setIsEmergency] = useState(false);
+  const [nudgeError, setNudgeError] = useState<string | null>(null);
+  const [csvInput, setCsvInput] = useState("");
+  const [importError, setImportError] = useState<string | null>(null);
 
   const { data: session } = useQuery<Session>({
     queryKey: ["/api/sessions", sessionId],
@@ -67,6 +73,29 @@ export default function SessionDetailScreen() {
   const { data: tables, isLoading, refetch } = useQuery<Table[]>({
     queryKey: ["/api/sessions", sessionId, "tables"],
     refetchInterval: 10000,
+  });
+
+  const closeNudgeModal = () => {
+    setShowNudgeModal(false);
+    setNudgeMessage("");
+    setSelectedTableId(null);
+    setIsEmergency(false);
+    setNudgeError(null);
+  };
+
+  const closeImportModal = () => {
+    setShowImportModal(false);
+    setCsvInput("");
+    setImportError(null);
+  };
+
+  const { data: nudgeStats } = useQuery<{ sent: number; acknowledged: number; pending: number }>({
+    queryKey: ["/api/nudges/stats", sessionId],
+    enabled: showNudgeModal,
+    queryFn: async () => {
+      const res = await apiRequest("GET", `/api/nudges/stats?sessionId=${sessionId}`);
+      return res.json();
+    },
   });
 
   const createTableMutation = useMutation({
@@ -94,15 +123,16 @@ export default function SessionDetailScreen() {
         sessionId,
         type: "admin",
         message,
-        priority: "normal",
+        priority: isEmergency ? "urgent" : "normal",
       });
       return res.json();
     },
     onSuccess: () => {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      setShowNudgeModal(false);
-      setNudgeMessage("");
-      setSelectedTableId(null);
+      closeNudgeModal();
+    },
+    onError: (error: Error) => {
+      setNudgeError(error.message.includes("429") ? "Nudges are rate-limited. Try again shortly." : "Failed to send nudge.");
     },
   });
 
@@ -111,16 +141,40 @@ export default function SessionDetailScreen() {
       const res = await apiRequest("POST", `/api/sessions/${sessionId}/broadcast-nudge`, {
         type: "admin",
         message,
-        priority: "normal",
+        priority: isEmergency ? "urgent" : "normal",
       });
       return res.json();
     },
     onSuccess: () => {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      setShowNudgeModal(false);
-      setNudgeMessage("");
+      closeNudgeModal();
+    },
+    onError: (error: Error) => {
+      setNudgeError(error.message.includes("429") ? "Broadcasts are rate-limited. Try again shortly." : "Failed to send broadcast.");
     },
   });
+
+  const importCsvMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/sessions/${sessionId}/tables/import-csv`, {
+        csv: csvInput,
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      queryClient.invalidateQueries({ queryKey: ["/api/sessions", sessionId, "tables"] });
+      closeImportModal();
+    },
+    onError: (error: Error) => {
+      setImportError(error.message);
+    },
+  });
+
+  const openQrSheet = async () => {
+    const url = new URL(`/api/sessions/${sessionId}/qr-sheet`, getApiUrl()).toString();
+    await WebBrowser.openBrowserAsync(url);
+  };
 
   const copyJoinCode = async (code: string) => {
     await Clipboard.setStringAsync(code);
@@ -216,13 +270,36 @@ export default function SessionDetailScreen() {
               Broadcast
             </ThemedText>
           </Pressable>
+          <Pressable
+            onPress={openQrSheet}
+            style={({ pressed }) => [
+              styles.actionButton,
+              { backgroundColor: theme.backgroundSecondary, opacity: pressed ? 0.8 : 1 },
+            ]}
+          >
+            <Feather name="grid" size={18} color={theme.text} />
+            <ThemedText type="caption" style={{ color: theme.text, fontWeight: "600" }}>
+              QR Sheet
+            </ThemedText>
+          </Pressable>
         </View>
 
         <View style={styles.sectionHeader}>
           <ThemedText type="h4">Tables</ThemedText>
-          <ThemedText type="caption" style={{ color: theme.textMuted }}>
-            {tables?.filter((t) => t.status === "active").length || 0} active
-          </ThemedText>
+          <View style={styles.sectionActions}>
+            <ThemedText type="caption" style={{ color: theme.textMuted }}>
+              {tables?.filter((t) => t.status === "active").length || 0} active
+            </ThemedText>
+            <Pressable
+              onPress={() => setShowImportModal(true)}
+              style={[styles.importButton, { backgroundColor: theme.backgroundSecondary }]}
+            >
+              <Feather name="upload" size={14} color={theme.text} />
+              <ThemedText type="caption" style={{ color: theme.text }}>
+                Import CSV
+              </ThemedText>
+            </Pressable>
+          </View>
         </View>
 
         {tables && tables.length > 0 ? (
@@ -389,20 +466,33 @@ export default function SessionDetailScreen() {
         visible={showNudgeModal}
         transparent
         animationType="slide"
-        onRequestClose={() => setShowNudgeModal(false)}
+        onRequestClose={closeNudgeModal}
       >
-        <Pressable style={styles.modalOverlay} onPress={() => setShowNudgeModal(false)}>
+        <Pressable style={styles.modalOverlay} onPress={closeNudgeModal}>
           <Pressable style={[styles.modalContent, { backgroundColor: theme.backgroundDefault }]} onPress={() => {}}>
             <View style={styles.modalHeader}>
               <ThemedText type="h4">
                 {selectedTableId ? "Send Nudge" : "Broadcast to All Tables"}
               </ThemedText>
-              <Pressable onPress={() => setShowNudgeModal(false)}>
+              <Pressable onPress={closeNudgeModal}>
                 <Feather name="x" size={24} color={theme.text} />
               </Pressable>
             </View>
 
             <View style={styles.modalForm}>
+              {nudgeStats ? (
+                <View style={styles.statsRow}>
+                  <View style={[styles.statChip, { backgroundColor: theme.backgroundSecondary }]}>
+                    <ThemedText type="caption">Sent: {nudgeStats.sent}</ThemedText>
+                  </View>
+                  <View style={[styles.statChip, { backgroundColor: theme.backgroundSecondary }]}>
+                    <ThemedText type="caption">Ack: {nudgeStats.acknowledged}</ThemedText>
+                  </View>
+                  <View style={[styles.statChip, { backgroundColor: theme.backgroundSecondary }]}>
+                    <ThemedText type="caption">Pending: {nudgeStats.pending}</ThemedText>
+                  </View>
+                </View>
+              ) : null}
               <View>
                 <ThemedText type="small" style={{ color: theme.textSecondary, marginBottom: Spacing.xs }}>
                   MESSAGE
@@ -417,6 +507,19 @@ export default function SessionDetailScreen() {
                 />
               </View>
 
+              <Pressable
+                onPress={() => setIsEmergency((prev) => !prev)}
+                style={[
+                  styles.emergencyToggle,
+                  { backgroundColor: isEmergency ? theme.error + "20" : theme.backgroundSecondary },
+                ]}
+              >
+                <Feather name="alert-octagon" size={16} color={isEmergency ? theme.error : theme.textMuted} />
+                <ThemedText type="caption" style={{ color: isEmergency ? theme.error : theme.textSecondary }}>
+                  Emergency nudge
+                </ThemedText>
+              </Pressable>
+
               <View style={styles.quickNudges}>
                 {["5 minutes remaining", "Please wrap up", "Time's up!"].map((msg) => (
                   <Pressable
@@ -429,6 +532,12 @@ export default function SessionDetailScreen() {
                 ))}
               </View>
 
+              {nudgeError ? (
+                <ThemedText type="caption" style={{ color: theme.error }}>
+                  {nudgeError}
+                </ThemedText>
+              ) : null}
+
               <Pressable
                 onPress={() => {
                   if (selectedTableId) {
@@ -440,12 +549,69 @@ export default function SessionDetailScreen() {
                 disabled={!nudgeMessage.trim() || sendNudgeMutation.isPending || broadcastNudgeMutation.isPending}
                 style={({ pressed }) => [
                   styles.modalButton,
-                  { backgroundColor: theme.warning, opacity: !nudgeMessage.trim() || pressed ? 0.7 : 1 },
+                  {
+                    backgroundColor: isEmergency ? theme.error : theme.warning,
+                    opacity: !nudgeMessage.trim() || pressed ? 0.7 : 1,
+                  },
                 ]}
               >
                 <Feather name="send" size={18} color={theme.buttonText} />
                 <ThemedText type="body" style={{ color: theme.buttonText, fontWeight: "600" }}>
                   {sendNudgeMutation.isPending || broadcastNudgeMutation.isPending ? "Sending..." : "Send Nudge"}
+                </ThemedText>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <Modal
+        visible={showImportModal}
+        transparent
+        animationType="slide"
+        onRequestClose={closeImportModal}
+      >
+        <Pressable style={styles.modalOverlay} onPress={closeImportModal}>
+          <Pressable style={[styles.modalContent, { backgroundColor: theme.backgroundDefault }]} onPress={() => {}}>
+            <View style={styles.modalHeader}>
+              <ThemedText type="h4">Import Table Topics (CSV)</ThemedText>
+              <Pressable onPress={closeImportModal}>
+                <Feather name="x" size={24} color={theme.text} />
+              </Pressable>
+            </View>
+
+            <View style={styles.modalForm}>
+              <ThemedText type="caption" style={{ color: theme.textMuted }}>
+                One topic per line, or use "tableNumber,topic".
+              </ThemedText>
+              <TextInput
+                style={[styles.modalInput, styles.largeTextArea, { backgroundColor: theme.backgroundSecondary, color: theme.text }]}
+                placeholder={"1, AI in Healthcare\n2, Future of Work\n3, Privacy by Design"}
+                placeholderTextColor={theme.textMuted}
+                value={csvInput}
+                onChangeText={setCsvInput}
+                multiline
+              />
+
+              {importError ? (
+                <ThemedText type="caption" style={{ color: theme.error }}>
+                  {importError}
+                </ThemedText>
+              ) : null}
+
+              <Pressable
+                onPress={() => importCsvMutation.mutate()}
+                disabled={!csvInput.trim() || importCsvMutation.isPending}
+                style={({ pressed }) => [
+                  styles.modalButton,
+                  {
+                    backgroundColor: theme.link,
+                    opacity: !csvInput.trim() || pressed ? 0.7 : 1,
+                  },
+                ]}
+              >
+                <ThemedText type="body" style={{ color: theme.buttonText, fontWeight: "600" }}>
+                  {importCsvMutation.isPending ? "Importing..." : "Import Topics"}
                 </ThemedText>
               </Pressable>
             </View>
@@ -483,6 +649,7 @@ const styles = StyleSheet.create({
     gap: Spacing.sm,
   },
   actionButton: {
+    flex: 1,
     flexDirection: "row",
     alignItems: "center",
     gap: Spacing.xs,
@@ -495,6 +662,19 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "center",
     marginTop: Spacing.md,
+  },
+  sectionActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.sm,
+  },
+  importButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.xs,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: Spacing.xs,
+    borderRadius: BorderRadius.full,
   },
   tableCard: {
     borderRadius: BorderRadius.lg,
@@ -611,6 +791,16 @@ const styles = StyleSheet.create({
   modalForm: {
     gap: Spacing.lg,
   },
+  statsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: Spacing.xs,
+  },
+  statChip: {
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: Spacing.xs,
+    borderRadius: BorderRadius.full,
+  },
   modalInput: {
     height: 52,
     borderRadius: BorderRadius.md,
@@ -621,6 +811,18 @@ const styles = StyleSheet.create({
     height: 80,
     paddingTop: Spacing.md,
     textAlignVertical: "top",
+  },
+  largeTextArea: {
+    height: 120,
+    paddingTop: Spacing.md,
+    textAlignVertical: "top",
+  },
+  emergencyToggle: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.xs,
+    padding: Spacing.sm,
+    borderRadius: BorderRadius.md,
   },
   quickNudges: {
     flexDirection: "row",

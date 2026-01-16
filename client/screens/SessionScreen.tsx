@@ -26,7 +26,7 @@ import { ThemedView } from "@/components/ThemedView";
 import { ThemedText } from "@/components/ThemedText";
 import { useTheme } from "@/hooks/useTheme";
 import { Spacing, BorderRadius, Shadows } from "@/constants/theme";
-import { apiRequest } from "@/lib/query-client";
+import { apiRequest, getApiUrl } from "@/lib/query-client";
 import { RootStackParamList } from "@/navigation/RootStackNavigator";
 import { ConnectionStatus } from "@/components/ConnectionStatus";
 import { MicLevelIndicator } from "@/components/MicLevelIndicator";
@@ -77,14 +77,26 @@ export default function SessionScreen() {
   const [hasPermission, setHasPermission] = useState(false);
   const [transcriptionStatus, setTranscriptionStatus] = useState<string>("");
   const [recordingError, setRecordingError] = useState<string | null>(null);
+  const [bufferedChunks, setBufferedChunks] = useState(0);
   
   const recordingRef = useRef<Audio.Recording | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const analyserDataRef = useRef<Uint8Array | null>(null);
+  const analyserIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  const pendingAudioQueueRef = useRef<string[]>([]);
   const recordingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const audioChunkIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const isRecordingRef = useRef(false);
   const pulseAnim = useSharedValue(1);
+  const pingFailuresRef = useRef(0);
+  const isFlushingRef = useRef(false);
+
+  const MAX_BUFFER_CHUNKS = 12;
+  const PING_INTERVAL_MS = 5000;
+  const PING_TIMEOUT_MS = 3000;
 
   const { data: tableData, isLoading: tableLoading } = useQuery<TableData>({
     queryKey: ["/api/tables", tableId],
@@ -142,6 +154,36 @@ export default function SessionScreen() {
     },
   });
 
+  const enqueueAudio = (audioBase64: string) => {
+    pendingAudioQueueRef.current.push(audioBase64);
+    while (pendingAudioQueueRef.current.length > MAX_BUFFER_CHUNKS) {
+      pendingAudioQueueRef.current.shift();
+    }
+    setBufferedChunks(pendingAudioQueueRef.current.length);
+  };
+
+  const flushQueuedAudio = useCallback(async () => {
+    if (isFlushingRef.current) return;
+    if (connectionStatus === "offline") return;
+    if (pendingAudioQueueRef.current.length === 0) return;
+
+    isFlushingRef.current = true;
+    try {
+      while (pendingAudioQueueRef.current.length > 0 && connectionStatus !== "offline") {
+        const nextAudio = pendingAudioQueueRef.current[0];
+        try {
+          await sendAudioMutation.mutateAsync(nextAudio);
+          pendingAudioQueueRef.current.shift();
+          setBufferedChunks(pendingAudioQueueRef.current.length);
+        } catch {
+          break;
+        }
+      }
+    } finally {
+      isFlushingRef.current = false;
+    }
+  }, [connectionStatus, sendAudioMutation]);
+
   const sendAudioBlob = useCallback(async (blob: Blob) => {
     if (blob.size < 100) return;
     
@@ -149,11 +191,20 @@ export default function SessionScreen() {
     reader.onloadend = () => {
       const base64 = (reader.result as string).split(",")[1];
       if (base64 && base64.length > 100) {
-        sendAudioMutation.mutate(base64);
+        if (connectionStatus === "offline") {
+          enqueueAudio(base64);
+          setTranscriptionStatus("Buffering audio...");
+          return;
+        }
+        sendAudioMutation.mutate(base64, {
+          onError: () => {
+            enqueueAudio(base64);
+          },
+        });
       }
     };
     reader.readAsDataURL(blob);
-  }, [sendAudioMutation]);
+  }, [connectionStatus, sendAudioMutation]);
 
   const captureAndSendAudioWeb = useCallback(async () => {
     if (!mediaRecorderRef.current || mediaRecorderRef.current.state !== "recording") {
@@ -253,6 +304,14 @@ export default function SessionScreen() {
       const recorder = new MediaRecorder(stream, { mimeType: "audio/webm;codecs=opus" });
       
       audioChunksRef.current = [];
+      const audioContext = new AudioContext();
+      const source = audioContext.createMediaStreamSource(stream);
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 2048;
+      source.connect(analyser);
+      audioContextRef.current = audioContext;
+      analyserRef.current = analyser;
+      analyserDataRef.current = new Uint8Array(analyser.fftSize);
       
       recorder.ondataavailable = (e) => {
         if (e.data.size > 0) {
@@ -263,6 +322,21 @@ export default function SessionScreen() {
       mediaRecorderRef.current = recorder;
       recorder.start(1000);
       
+      if (analyserIntervalRef.current) {
+        clearInterval(analyserIntervalRef.current);
+      }
+      analyserIntervalRef.current = setInterval(() => {
+        if (!analyserRef.current || !analyserDataRef.current) return;
+        analyserRef.current.getByteTimeDomainData(analyserDataRef.current);
+        let sumSquares = 0;
+        for (let i = 0; i < analyserDataRef.current.length; i++) {
+          const centered = (analyserDataRef.current[i] - 128) / 128;
+          sumSquares += centered * centered;
+        }
+        const rms = Math.sqrt(sumSquares / analyserDataRef.current.length);
+        setMicLevel(Math.min(1, rms * 2.5));
+      }, 120);
+
       return true;
     } catch (error) {
       console.error("Failed to start web recording:", error);
@@ -278,7 +352,41 @@ export default function SessionScreen() {
       });
       
       const recording = new Audio.Recording();
-      await recording.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
+      const recordingOptions: Audio.RecordingOptions = {
+        android: {
+          extension: ".m4a",
+          outputFormat: Audio.AndroidOutputFormat.MPEG_4,
+          audioEncoder: Audio.AndroidAudioEncoder.AAC,
+          sampleRate: 44100,
+          numberOfChannels: 1,
+          bitRate: 128000,
+          isMeteringEnabled: true,
+        },
+        ios: {
+          extension: ".m4a",
+          outputFormat: Audio.IOSOutputFormat.MPEG4AAC,
+          audioQuality: Audio.IOSAudioQuality.MEDIUM,
+          sampleRate: 44100,
+          numberOfChannels: 1,
+          bitRate: 128000,
+          linearPCMBitDepth: 16,
+          linearPCMIsBigEndian: false,
+          linearPCMIsFloat: false,
+          isMeteringEnabled: true,
+        },
+        web: {
+          mimeType: "audio/webm",
+          bitsPerSecond: 128000,
+        },
+      };
+      await recording.prepareToRecordAsync(recordingOptions);
+      recording.setOnRecordingStatusUpdate((status) => {
+        if (status.isRecording && typeof status.metering === "number") {
+          const normalized = Math.min(1, Math.max(0, (status.metering + 60) / 60));
+          setMicLevel(normalized);
+        }
+      });
+      recording.setProgressUpdateInterval(200);
       await recording.startAsync();
       
       recordingRef.current = recording;
@@ -322,8 +430,9 @@ export default function SessionScreen() {
 
       recordingIntervalRef.current = setInterval(() => {
         if (isRecordingRef.current && !isPaused) {
-          const level = Math.random() * 0.5 + 0.3;
-          setMicLevel(level);
+          if (Platform.OS !== "web" && micLevel <= 0.05) {
+            setMicLevel(0.1);
+          }
         }
       }, 100);
 
@@ -372,6 +481,16 @@ export default function SessionScreen() {
           mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
           mediaRecorderRef.current = null;
         }
+        if (analyserIntervalRef.current) {
+          clearInterval(analyserIntervalRef.current);
+          analyserIntervalRef.current = null;
+        }
+        if (audioContextRef.current) {
+          audioContextRef.current.close();
+          audioContextRef.current = null;
+        }
+        analyserRef.current = null;
+        analyserDataRef.current = null;
       } else {
         if (recordingRef.current) {
           const status = await recordingRef.current.getStatusAsync();
@@ -432,6 +551,50 @@ export default function SessionScreen() {
   }));
 
   useEffect(() => {
+    let interval: NodeJS.Timeout | null = null;
+
+    const pingServer = async () => {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), PING_TIMEOUT_MS);
+        const start = Date.now();
+        const res = await fetch(new URL("/api/ping", getApiUrl()).toString(), {
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+        if (!res.ok) {
+          throw new Error("Ping failed");
+        }
+        const latency = Date.now() - start;
+        pingFailuresRef.current = 0;
+        if (latency > 2000) {
+          setConnectionStatus("degraded");
+        } else {
+          setConnectionStatus("connected");
+        }
+      } catch {
+        pingFailuresRef.current += 1;
+        if (pingFailuresRef.current >= 3) {
+          setConnectionStatus("offline");
+        } else {
+          setConnectionStatus("degraded");
+        }
+      }
+    };
+
+    interval = setInterval(pingServer, PING_INTERVAL_MS);
+    pingServer();
+
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, []);
+
+  useEffect(() => {
+    flushQueuedAudio();
+  }, [connectionStatus, flushQueuedAudio]);
+
+  useEffect(() => {
     return () => {
       isRecordingRef.current = false;
       
@@ -455,6 +618,9 @@ export default function SessionScreen() {
       }
       if (audioChunkIntervalRef.current) {
         clearInterval(audioChunkIntervalRef.current);
+      }
+      if (analyserIntervalRef.current) {
+        clearInterval(analyserIntervalRef.current);
       }
     };
   }, []);
@@ -552,6 +718,11 @@ export default function SessionScreen() {
           {transcriptionStatus ? (
             <ThemedText type="caption" style={{ color: theme.accent, marginTop: Spacing.xs }}>
               {transcriptionStatus}
+            </ThemedText>
+          ) : null}
+          {bufferedChunks > 0 ? (
+            <ThemedText type="caption" style={{ color: theme.textSecondary, marginTop: Spacing.xs }}>
+              Buffering {bufferedChunks * 10}s of audio for backfill
             </ThemedText>
           ) : null}
           <ThemedText type="body" style={{ marginTop: Spacing.sm, color: theme.textSecondary }}>

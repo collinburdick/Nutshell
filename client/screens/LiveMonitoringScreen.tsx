@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import {
   View,
   StyleSheet,
@@ -42,10 +42,31 @@ export default function LiveMonitoringScreen() {
   const [showNudgeModal, setShowNudgeModal] = useState(false);
   const [selectedTable, setSelectedTable] = useState<ActiveTable | null>(null);
   const [nudgeMessage, setNudgeMessage] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [healthFilter, setHealthFilter] = useState<"all" | "healthy" | "degraded" | "offline">("all");
+  const [isEmergency, setIsEmergency] = useState(false);
+  const [nudgeError, setNudgeError] = useState<string | null>(null);
 
   const { data: activeTables, isLoading, refetch } = useQuery<ActiveTable[]>({
     queryKey: ["/api/admin/active-tables"],
     refetchInterval: 5000,
+  });
+
+  const closeNudgeModal = () => {
+    setShowNudgeModal(false);
+    setNudgeMessage("");
+    setSelectedTable(null);
+    setIsEmergency(false);
+    setNudgeError(null);
+  };
+
+  const { data: nudgeStats } = useQuery<{ sent: number; acknowledged: number; pending: number }>({
+    queryKey: ["/api/nudges/stats", selectedTable?.id],
+    enabled: !!selectedTable && showNudgeModal,
+    queryFn: async () => {
+      const res = await apiRequest("GET", `/api/nudges/stats?tableId=${selectedTable?.id}`);
+      return res.json();
+    },
   });
 
   const sendNudgeMutation = useMutation({
@@ -54,15 +75,16 @@ export default function LiveMonitoringScreen() {
         tableId,
         type: "admin",
         message,
-        priority: "urgent",
+        priority: isEmergency ? "urgent" : "normal",
       });
       return res.json();
     },
     onSuccess: () => {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      setShowNudgeModal(false);
-      setNudgeMessage("");
-      setSelectedTable(null);
+      closeNudgeModal();
+    },
+    onError: (error: Error) => {
+      setNudgeError(error.message.includes("429") ? "Nudges are rate-limited. Try again shortly." : "Failed to send nudge.");
     },
   });
 
@@ -89,6 +111,16 @@ export default function LiveMonitoringScreen() {
     return "low";
   };
 
+  const getHealthState = (dateString: string | null) => {
+    if (!dateString) return "offline";
+    const date = new Date(dateString);
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    if (diffMs <= 60000) return "healthy";
+    if (diffMs <= 180000) return "degraded";
+    return "offline";
+  };
+
   const getActivityColor = (level: string) => {
     switch (level) {
       case "high":
@@ -101,6 +133,30 @@ export default function LiveMonitoringScreen() {
         return theme.textMuted;
     }
   };
+
+  const filteredTables = useMemo(() => {
+    if (!activeTables) return [];
+    return activeTables.filter((table) => {
+      const matchesSearch =
+        table.sessionName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        table.eventName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        table.topic?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        table.joinCode.toLowerCase().includes(searchQuery.toLowerCase());
+      const healthState = getHealthState(table.lastActivityAt);
+      const matchesHealth = healthFilter === "all" ? true : healthState === healthFilter;
+      return matchesSearch && matchesHealth;
+    });
+  }, [activeTables, healthFilter, searchQuery]);
+
+  const alertTables = useMemo(() => {
+    if (!activeTables) return [];
+    return activeTables.filter((table) => getHealthState(table.lastActivityAt) !== "healthy");
+  }, [activeTables]);
+
+  const hotTables = useMemo(() => {
+    if (!activeTables) return [];
+    return activeTables.filter((table) => getActivityLevel(table.lastActivityAt) === "high");
+  }, [activeTables]);
 
   return (
     <ThemedView style={styles.container}>
@@ -126,7 +182,7 @@ export default function LiveMonitoringScreen() {
         <View style={styles.stats}>
           <View style={[styles.statCard, { backgroundColor: theme.backgroundDefault }]}>
             <ThemedText type="h2" style={{ color: theme.link }}>
-              {activeTables?.length || 0}
+              {filteredTables.length || 0}
             </ThemedText>
             <ThemedText type="caption" style={{ color: theme.textMuted }}>
               Active Tables
@@ -134,11 +190,53 @@ export default function LiveMonitoringScreen() {
           </View>
           <View style={[styles.statCard, { backgroundColor: theme.backgroundDefault }]}>
             <ThemedText type="h2" style={{ color: theme.success }}>
-              {activeTables?.filter((t) => getActivityLevel(t.lastActivityAt) === "high").length || 0}
+              {hotTables.length || 0}
             </ThemedText>
             <ThemedText type="caption" style={{ color: theme.textMuted }}>
-              High Activity
+              Hot Tables
             </ThemedText>
+          </View>
+        </View>
+
+        <View style={styles.filters}>
+          <View style={[styles.searchBox, { backgroundColor: theme.backgroundDefault }]}>
+            <Feather name="search" size={16} color={theme.textMuted} />
+            <TextInput
+              style={[styles.searchInput, { color: theme.text }]}
+              placeholder="Filter by event, session, topic, or code"
+              placeholderTextColor={theme.textMuted}
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+            />
+          </View>
+          <View style={styles.filterRow}>
+            {[
+              { key: "all", label: "All" },
+              { key: "healthy", label: "Healthy" },
+              { key: "degraded", label: "Degraded" },
+              { key: "offline", label: "Offline" },
+            ].map((item) => (
+              <Pressable
+                key={item.key}
+                onPress={() => setHealthFilter(item.key as typeof healthFilter)}
+                style={[
+                  styles.filterChip,
+                  {
+                    backgroundColor:
+                      healthFilter === item.key ? theme.link : theme.backgroundDefault,
+                  },
+                ]}
+              >
+                <ThemedText
+                  type="caption"
+                  style={{
+                    color: healthFilter === item.key ? theme.buttonText : theme.textSecondary,
+                  }}
+                >
+                  {item.label}
+                </ThemedText>
+              </Pressable>
+            ))}
           </View>
         </View>
       </View>
@@ -150,10 +248,20 @@ export default function LiveMonitoringScreen() {
           <RefreshControl refreshing={isLoading} onRefresh={() => refetch()} />
         }
       >
-        {activeTables && activeTables.length > 0 ? (
+        {alertTables.length > 0 ? (
+          <View style={[styles.alertBanner, { backgroundColor: theme.warning + "20" }]}>
+            <Feather name="alert-triangle" size={16} color={theme.warning} />
+            <ThemedText type="caption" style={{ color: theme.warning, fontWeight: "600" }}>
+              {alertTables.length} table{alertTables.length !== 1 ? "s" : ""} need attention
+            </ThemedText>
+          </View>
+        ) : null}
+
+        {filteredTables.length > 0 ? (
           <View style={styles.tableGrid}>
-            {activeTables.map((table) => {
+            {filteredTables.map((table) => {
               const activityLevel = getActivityLevel(table.lastActivityAt);
+              const healthState = getHealthState(table.lastActivityAt);
               return (
                 <Pressable
                   key={table.id}
@@ -194,7 +302,11 @@ export default function LiveMonitoringScreen() {
                         {getTimeSince(table.lastActivityAt)}
                       </ThemedText>
                     </View>
-                    <Feather name="bell" size={16} color={theme.warning} />
+                    <View style={[styles.healthBadge, { backgroundColor: theme.backgroundSecondary }]}>
+                      <ThemedText type="caption" style={{ color: theme.textSecondary }}>
+                        {healthState}
+                      </ThemedText>
+                    </View>
                   </View>
                 </Pressable>
               );
@@ -217,15 +329,15 @@ export default function LiveMonitoringScreen() {
         visible={showNudgeModal}
         transparent
         animationType="slide"
-        onRequestClose={() => setShowNudgeModal(false)}
+        onRequestClose={closeNudgeModal}
       >
-        <Pressable style={styles.modalOverlay} onPress={() => setShowNudgeModal(false)}>
+        <Pressable style={styles.modalOverlay} onPress={closeNudgeModal}>
           <Pressable style={[styles.modalContent, { backgroundColor: theme.backgroundDefault }]} onPress={() => {}}>
             <View style={styles.modalHeader}>
               <ThemedText type="h4">
                 Nudge Table {selectedTable?.tableNumber}
               </ThemedText>
-              <Pressable onPress={() => setShowNudgeModal(false)}>
+              <Pressable onPress={closeNudgeModal}>
                 <Feather name="x" size={24} color={theme.text} />
               </Pressable>
             </View>
@@ -239,6 +351,20 @@ export default function LiveMonitoringScreen() {
                   {selectedTable?.sessionName}
                 </ThemedText>
               </View>
+
+              {nudgeStats ? (
+                <View style={styles.statsRow}>
+                  <View style={[styles.statChip, { backgroundColor: theme.backgroundSecondary }]}>
+                    <ThemedText type="caption">Sent: {nudgeStats.sent}</ThemedText>
+                  </View>
+                  <View style={[styles.statChip, { backgroundColor: theme.backgroundSecondary }]}>
+                    <ThemedText type="caption">Ack: {nudgeStats.acknowledged}</ThemedText>
+                  </View>
+                  <View style={[styles.statChip, { backgroundColor: theme.backgroundSecondary }]}>
+                    <ThemedText type="caption">Pending: {nudgeStats.pending}</ThemedText>
+                  </View>
+                </View>
+              ) : null}
 
               <View>
                 <ThemedText type="small" style={{ color: theme.textSecondary, marginBottom: Spacing.xs }}>
@@ -254,6 +380,19 @@ export default function LiveMonitoringScreen() {
                 />
               </View>
 
+              <Pressable
+                onPress={() => setIsEmergency((prev) => !prev)}
+                style={[
+                  styles.emergencyToggle,
+                  { backgroundColor: isEmergency ? theme.error + "20" : theme.backgroundSecondary },
+                ]}
+              >
+                <Feather name="alert-octagon" size={16} color={isEmergency ? theme.error : theme.textMuted} />
+                <ThemedText type="caption" style={{ color: isEmergency ? theme.error : theme.textSecondary }}>
+                  Emergency nudge
+                </ThemedText>
+              </Pressable>
+
               <View style={styles.quickNudges}>
                 {["5 minutes remaining", "Please wrap up", "Time's up!", "Check in with your table"].map((msg) => (
                   <Pressable
@@ -266,6 +405,12 @@ export default function LiveMonitoringScreen() {
                 ))}
               </View>
 
+              {nudgeError ? (
+                <ThemedText type="caption" style={{ color: theme.error }}>
+                  {nudgeError}
+                </ThemedText>
+              ) : null}
+
               <Pressable
                 onPress={() => {
                   if (selectedTable) {
@@ -275,7 +420,10 @@ export default function LiveMonitoringScreen() {
                 disabled={!nudgeMessage.trim() || sendNudgeMutation.isPending}
                 style={({ pressed }) => [
                   styles.modalButton,
-                  { backgroundColor: theme.warning, opacity: !nudgeMessage.trim() || pressed ? 0.7 : 1 },
+                  {
+                    backgroundColor: isEmergency ? theme.error : theme.warning,
+                    opacity: !nudgeMessage.trim() || pressed ? 0.7 : 1,
+                  },
                 ]}
               >
                 <Feather name="send" size={18} color={theme.buttonText} />
@@ -325,6 +473,32 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: Spacing.md,
   },
+  filters: {
+    marginTop: Spacing.md,
+    gap: Spacing.sm,
+  },
+  searchBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: Spacing.md,
+    borderRadius: BorderRadius.md,
+    height: 44,
+    gap: Spacing.sm,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 14,
+  },
+  filterRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: Spacing.xs,
+  },
+  filterChip: {
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: Spacing.xs,
+    borderRadius: BorderRadius.full,
+  },
   statCard: {
     flex: 1,
     borderRadius: BorderRadius.lg,
@@ -336,6 +510,14 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     padding: Spacing.lg,
+  },
+  alertBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.xs,
+    padding: Spacing.sm,
+    borderRadius: BorderRadius.md,
+    marginBottom: Spacing.md,
   },
   tableGrid: {
     flexDirection: "row",
@@ -377,6 +559,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: Spacing.xs,
   },
+  healthBadge: {
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: Spacing.xs,
+    borderRadius: BorderRadius.full,
+  },
   emptyState: {
     flex: 1,
     alignItems: "center",
@@ -408,6 +595,16 @@ const styles = StyleSheet.create({
   modalForm: {
     gap: Spacing.lg,
   },
+  statsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: Spacing.xs,
+  },
+  statChip: {
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: Spacing.xs,
+    borderRadius: BorderRadius.full,
+  },
   modalInput: {
     height: 52,
     borderRadius: BorderRadius.md,
@@ -418,6 +615,13 @@ const styles = StyleSheet.create({
     height: 80,
     paddingTop: Spacing.md,
     textAlignVertical: "top",
+  },
+  emergencyToggle: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.xs,
+    padding: Spacing.sm,
+    borderRadius: BorderRadius.md,
   },
   quickNudges: {
     flexDirection: "row",
