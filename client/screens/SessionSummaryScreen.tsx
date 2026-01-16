@@ -25,23 +25,27 @@ import { RootStackParamList } from "@/navigation/RootStackNavigator";
 
 type SessionSummaryRouteProp = RouteProp<RootStackParamList, "SessionSummary">;
 
-interface TableSummary {
-  tableId: number;
-  tableNumber: number;
-  summary: string;
+interface TableSummaryContent {
+  content: string;
   themes: string[];
   actionItems: string[];
   openQuestions: string[];
 }
 
+interface TableSummary {
+  tableId: number;
+  tableNumber: number;
+  topic: string | null;
+  summary: TableSummaryContent | null;
+}
+
 interface AggregatedSummary {
-  sessionId: number;
   sessionName: string;
-  sessionTopic: string | null;
+  topic: string | null;
   overallSummary: string;
-  themes: { theme: string; tableIds: number[] }[];
-  actionItems: string[];
-  openQuestions: string[];
+  aggregatedThemes: string[];
+  aggregatedActionItems: string[];
+  aggregatedOpenQuestions: string[];
   tableSummaries: TableSummary[];
 }
 
@@ -96,15 +100,15 @@ export default function SessionSummaryScreen() {
   };
 
   const copyAllActionItems = async () => {
-    if (summary?.actionItems) {
-      const text = summary.actionItems.map((item, i) => `${i + 1}. ${item}`).join("\n");
+    if (summary?.aggregatedActionItems) {
+      const text = summary.aggregatedActionItems.map((item, i) => `${i + 1}. ${item}`).join("\n");
       await copyToClipboard(text);
     }
   };
 
-  const filteredThemes = summary?.themes.filter((t) =>
-    t.theme.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const filteredThemes = summary?.aggregatedThemes?.filter((t) =>
+    t.toLowerCase().includes(searchQuery.toLowerCase())
+  ) || [];
 
   const presentBg = darkPresentation ? "#0A0A0A" : theme.backgroundRoot;
   const presentText = darkPresentation ? "#FFFFFF" : theme.text;
@@ -217,9 +221,9 @@ export default function SessionSummaryScreen() {
             >
               {summary.sessionName}
             </ThemedText>
-            {summary.sessionTopic ? (
+            {summary.topic ? (
               <ThemedText type="body" style={[styles.presentSubtitle, { color: presentMuted }]}>
-                {summary.sessionTopic}
+                {summary.topic}
               </ThemedText>
             ) : null}
 
@@ -232,16 +236,16 @@ export default function SessionSummaryScreen() {
               </ThemedText>
             </View>
 
-            {summary.themes.length > 0 ? (
+            {summary.aggregatedThemes && summary.aggregatedThemes.length > 0 ? (
               <View style={styles.presentSection}>
                 <ThemedText type="h4" style={[styles.presentSectionTitle, { color: amber }]}>
                   Key Themes
                 </ThemedText>
                 <View style={styles.presentThemes}>
-                  {summary.themes.slice(0, 6).map((t) => (
-                    <View key={t.theme} style={[styles.presentThemeBadge, { backgroundColor: amber + "20", borderColor: amber }]}>
+                  {summary.aggregatedThemes.slice(0, 6).map((themeText, idx) => (
+                    <View key={idx} style={[styles.presentThemeBadge, { backgroundColor: amber + "20", borderColor: amber }]}>
                       <ThemedText type="body" style={{ color: amber, fontWeight: "600" }}>
-                        {t.theme}
+                        {themeText}
                       </ThemedText>
                     </View>
                   ))}
@@ -249,12 +253,12 @@ export default function SessionSummaryScreen() {
               </View>
             ) : null}
 
-            {summary.actionItems.length > 0 ? (
+            {summary.aggregatedActionItems && summary.aggregatedActionItems.length > 0 ? (
               <View style={styles.presentSection}>
                 <ThemedText type="h4" style={[styles.presentSectionTitle, { color: amber }]}>
                   Action Items
                 </ThemedText>
-                {summary.actionItems.map((item, index) => (
+                {summary.aggregatedActionItems.map((item, index) => (
                   <View key={index} style={styles.presentActionItem}>
                     <ThemedText type="h3" style={{ color: amber, width: 40 }}>
                       {index + 1}.
@@ -292,50 +296,26 @@ export default function SessionSummaryScreen() {
               </ThemedText>
             </View>
 
-            {(filteredThemes?.length ?? 0) > 0 ? (
+            {filteredThemes.length > 0 ? (
               <View style={[styles.exploreCard, { backgroundColor: theme.backgroundDefault }]}>
                 <ThemedText type="h4" style={{ marginBottom: Spacing.md }}>
-                  Themes ({filteredThemes?.length})
+                  Themes ({filteredThemes.length})
                 </ThemedText>
-                {filteredThemes?.map((t) => (
-                  <Pressable
-                    key={t.theme}
-                    onPress={() => toggleTheme(t.theme)}
-                    style={styles.themeItem}
-                  >
+                {filteredThemes.map((themeText, idx) => (
+                  <View key={idx} style={styles.themeItem}>
                     <View style={styles.themeHeader}>
                       <View style={[styles.themeBadge, { backgroundColor: amber + "20" }]}>
                         <ThemedText type="caption" style={{ color: amber, fontWeight: "600" }}>
-                          {t.theme}
+                          {themeText}
                         </ThemedText>
-                      </View>
-                      <View style={styles.themeCount}>
-                        <ThemedText type="caption" style={{ color: theme.textMuted }}>
-                          {t.tableIds.length} table{t.tableIds.length !== 1 ? "s" : ""}
-                        </ThemedText>
-                        <Feather
-                          name={expandedThemes.has(t.theme) ? "chevron-up" : "chevron-down"}
-                          size={16}
-                          color={theme.textMuted}
-                        />
                       </View>
                     </View>
-                    {expandedThemes.has(t.theme) ? (
-                      <View style={styles.themeDetails}>
-                        <ThemedText type="caption" style={{ color: theme.textMuted }}>
-                          Mentioned at: {t.tableIds.map((id) => {
-                            const table = summary.tableSummaries.find((ts) => ts.tableId === id);
-                            return table ? `Table ${table.tableNumber}` : `Table ${id}`;
-                          }).join(", ")}
-                        </ThemedText>
-                      </View>
-                    ) : null}
-                  </Pressable>
+                  </View>
                 ))}
               </View>
             ) : null}
 
-            {summary.actionItems.length > 0 ? (
+            {summary.aggregatedActionItems && summary.aggregatedActionItems.length > 0 ? (
               <View style={[styles.exploreCard, { backgroundColor: theme.backgroundDefault }]}>
                 <View style={styles.cardHeader}>
                   <ThemedText type="h4">Action Items</ThemedText>
@@ -344,7 +324,7 @@ export default function SessionSummaryScreen() {
                     <ThemedText type="caption" style={{ color: amber }}>Copy All</ThemedText>
                   </Pressable>
                 </View>
-                {summary.actionItems.map((item, index) => (
+                {summary.aggregatedActionItems.map((item, index) => (
                   <Pressable
                     key={index}
                     onPress={() => copyToClipboard(item)}
@@ -362,10 +342,10 @@ export default function SessionSummaryScreen() {
               </View>
             ) : null}
 
-            {summary.openQuestions.length > 0 ? (
+            {summary.aggregatedOpenQuestions && summary.aggregatedOpenQuestions.length > 0 ? (
               <View style={[styles.exploreCard, { backgroundColor: theme.backgroundDefault }]}>
                 <ThemedText type="h4" style={{ marginBottom: Spacing.md }}>Open Questions</ThemedText>
-                {summary.openQuestions.map((question, index) => (
+                {summary.aggregatedOpenQuestions.map((question, index) => (
                   <View key={index} style={styles.questionItem}>
                     <Feather name="help-circle" size={16} color={theme.textMuted} />
                     <ThemedText type="body" style={{ flex: 1, color: theme.text }}>
@@ -376,7 +356,7 @@ export default function SessionSummaryScreen() {
               </View>
             ) : null}
 
-            {summary.tableSummaries.length > 0 ? (
+            {summary.tableSummaries && summary.tableSummaries.length > 0 ? (
               <View style={[styles.exploreCard, { backgroundColor: theme.backgroundDefault }]}>
                 <ThemedText type="h4" style={{ marginBottom: Spacing.md }}>
                   Table Summaries ({summary.tableSummaries.length})
@@ -393,9 +373,16 @@ export default function SessionSummaryScreen() {
                           {table.tableNumber}
                         </ThemedText>
                       </View>
-                      <ThemedText type="body" style={{ fontWeight: "600", flex: 1 }}>
-                        Table {table.tableNumber}
-                      </ThemedText>
+                      <View style={{ flex: 1 }}>
+                        <ThemedText type="body" style={{ fontWeight: "600" }}>
+                          Table {table.tableNumber}
+                        </ThemedText>
+                        {table.topic ? (
+                          <ThemedText type="caption" style={{ color: theme.textMuted }}>
+                            {table.topic}
+                          </ThemedText>
+                        ) : null}
+                      </View>
                       <Feather
                         name={expandedTables.has(table.tableId) ? "chevron-up" : "chevron-down"}
                         size={20}
@@ -405,12 +392,12 @@ export default function SessionSummaryScreen() {
                     {expandedTables.has(table.tableId) ? (
                       <View style={styles.tableSectionContent}>
                         <ThemedText type="body" style={{ color: theme.textSecondary }}>
-                          {table.summary || "No summary available."}
+                          {table.summary?.content || "No summary available."}
                         </ThemedText>
-                        {table.themes.length > 0 ? (
+                        {table.summary?.themes && table.summary.themes.length > 0 ? (
                           <View style={styles.tableThemes}>
-                            {table.themes.map((t) => (
-                              <View key={t} style={[styles.smallBadge, { backgroundColor: amber + "15" }]}>
+                            {table.summary.themes.map((t, idx) => (
+                              <View key={idx} style={[styles.smallBadge, { backgroundColor: amber + "15" }]}>
                                 <ThemedText type="caption" style={{ color: amber }}>
                                   {t}
                                 </ThemedText>
