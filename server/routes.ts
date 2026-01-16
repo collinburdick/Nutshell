@@ -6,8 +6,7 @@ import crypto from "crypto";
 import { speechToText, convertWebmToWav } from "./replit_integrations/audio/client";
 
 const openai = new OpenAI({
-  apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
-  baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
+  apiKey: process.env.SlalomOpenAIAPIKey,
 });
 
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "nutshell2026";
