@@ -143,13 +143,18 @@ export default function SessionScreen() {
 
   // Function to capture audio and send to backend
   const captureAndSendAudio = useCallback(async () => {
-    if (!audioRecorder.isRecording || audioRecorder.uri === null) {
+    if (!audioRecorder.isRecording) {
+      console.log("Recorder not recording, skipping capture");
       return;
     }
 
     try {
       // Stop current recording to get the audio file
       await audioRecorder.stop();
+      
+      // Small delay to ensure the file is written
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
       const uri = audioRecorder.uri;
 
       if (uri) {
@@ -171,23 +176,34 @@ export default function SessionScreen() {
           }
         } else {
           // On native, use new File API to read as base64
-          const file = new File(uri);
-          const base64 = await file.base64();
-          if (base64 && base64.length > 100) {
-            sendAudioMutation.mutate(base64);
+          try {
+            const file = new File(uri);
+            const base64 = await file.base64();
+            if (base64 && base64.length > 100) {
+              sendAudioMutation.mutate(base64);
+            }
+          } catch (fileError) {
+            console.error("Native file read error:", fileError);
           }
         }
       }
 
       // Restart recording for next chunk if still in recording mode
       if (isRecordingRef.current) {
-        audioRecorder.record();
+        // Small delay before restarting
+        await new Promise(resolve => setTimeout(resolve, 50));
+        try {
+          audioRecorder.record();
+        } catch (restartError) {
+          console.error("Failed to restart recording:", restartError);
+        }
       }
     } catch (error) {
       console.error("Error capturing audio:", error);
       // Try to restart recording
       if (isRecordingRef.current) {
         try {
+          await new Promise(resolve => setTimeout(resolve, 100));
           audioRecorder.record();
         } catch (e) {
           console.error("Failed to restart recording:", e);
@@ -213,20 +229,24 @@ export default function SessionScreen() {
         return;
       }
 
-      await AudioModule.setAudioModeAsync({
-        allowsRecording: true,
-        playsInSilentMode: true,
-      });
-
-      // Prepare the recorder first (required for native modules)
+      // Set audio mode for recording
       try {
-        await audioRecorder.prepareToRecordAsync();
-      } catch (prepareError) {
-        console.log("Prepare to record (may be optional):", prepareError);
-        // Some versions don't require this, continue anyway
+        await AudioModule.setAudioModeAsync({
+          allowsRecording: true,
+          playsInSilentMode: true,
+        });
+      } catch (modeError) {
+        console.log("Audio mode setup (may be optional on web):", modeError);
       }
 
-      audioRecorder.record();
+      // Start recording - expo-audio's useAudioRecorder handles preparation internally
+      try {
+        audioRecorder.record();
+      } catch (recordError) {
+        console.error("Initial record call failed:", recordError);
+        throw recordError;
+      }
+
       setIsRecording(true);
       isRecordingRef.current = true;
       setSessionStartTime(new Date());
@@ -249,17 +269,17 @@ export default function SessionScreen() {
         }
       }, 100);
 
-      // Capture and send audio every 30 seconds for rolling transcription
+      // Capture and send audio every 10 seconds for more real-time transcription
       audioChunkIntervalRef.current = setInterval(() => {
         if (isRecordingRef.current && !isPaused) {
           captureAndSendAudio();
         }
-      }, 30000);
+      }, 10000);
 
     } catch (error) {
       console.error("Failed to start recording:", error);
       const errorMessage = error instanceof Error ? error.message : "Unknown error";
-      if (errorMessage.includes("NativeSharedObject")) {
+      if (errorMessage.includes("NativeSharedObject") || errorMessage.includes("FunctionCallException")) {
         setRecordingError("Recording not available. Please use the Expo Go app on your device.");
       } else {
         setRecordingError("Could not start recording. Please try again.");
@@ -269,22 +289,26 @@ export default function SessionScreen() {
   };
 
   const stopRecording = async () => {
-    try {
-      isRecordingRef.current = false;
-      
-      // Clear intervals first
-      if (recordingIntervalRef.current) {
-        clearInterval(recordingIntervalRef.current);
-        recordingIntervalRef.current = null;
-      }
-      if (audioChunkIntervalRef.current) {
-        clearInterval(audioChunkIntervalRef.current);
-        audioChunkIntervalRef.current = null;
-      }
+    // Clear intervals first regardless of recording state
+    isRecordingRef.current = false;
+    
+    if (recordingIntervalRef.current) {
+      clearInterval(recordingIntervalRef.current);
+      recordingIntervalRef.current = null;
+    }
+    if (audioChunkIntervalRef.current) {
+      clearInterval(audioChunkIntervalRef.current);
+      audioChunkIntervalRef.current = null;
+    }
 
+    try {
       // Stop recording and capture final audio
       if (audioRecorder.isRecording) {
         await audioRecorder.stop();
+        
+        // Small delay to ensure file is written
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
         const uri = audioRecorder.uri;
 
         // Send the final audio chunk
@@ -313,14 +337,14 @@ export default function SessionScreen() {
           }
         }
       }
-
+    } catch (error) {
+      console.error("Failed to stop recording:", error);
+    } finally {
+      // Always update UI state
       setIsRecording(false);
       setMicLevel(0);
       pulseAnim.value = 1;
-
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    } catch (error) {
-      console.error("Failed to stop recording:", error);
     }
   };
 
