@@ -906,6 +906,9 @@ Keep the summary concise and focused on the most important points.`,
         return res.status(403).json({ error: "Quotes are disabled for this event." });
       }
       const quote = await storage.updateQuote(quoteId, req.body);
+      if (!quote) {
+        return res.status(404).json({ error: "Quote not found after update" });
+      }
       await storage.createAuditLog({
         actor: "admin",
         action: "update_quote",
@@ -1485,7 +1488,15 @@ Keep the summary concise and focused on the most important points.`,
     try {
       const eventId = parseInt(req.params.id);
       const sessions = await storage.getSessionsByEvent(eventId);
-      const result = [];
+      const result: Array<{
+        id: number;
+        sessionId: number;
+        tableNumber: number;
+        topic: string | null;
+        status: string;
+        lastAudioAt: Date | null;
+        sessionName: string;
+      }> = [];
       for (const session of sessions) {
         const tables = await storage.getTablesBySession(session.id);
         tables.forEach((table) => {
