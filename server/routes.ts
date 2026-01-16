@@ -3,6 +3,7 @@ import { createServer, type Server } from "node:http";
 import OpenAI from "openai";
 import { storage } from "./storage";
 import crypto from "crypto";
+import { speechToText, convertWebmToWav } from "./replit_integrations/audio/client";
 
 const openai = new OpenAI({
   apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
@@ -189,21 +190,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.json({ success: true, transcription: null, message: "No audio data" });
       }
 
-      // Decode base64 audio and transcribe using OpenAI Whisper
+      // Decode base64 audio and transcribe using Replit AI Integration
       try {
         const audioBuffer = Buffer.from(audio, "base64");
         
-        // Create a file-like object for the OpenAI API
-        const audioBlob = new Blob([audioBuffer], { type: "audio/webm" });
-        const audioFile = new File([audioBlob], "audio.webm", { type: "audio/webm" });
+        // Convert WebM to WAV for better transcription accuracy
+        let wavBuffer: Buffer;
+        try {
+          wavBuffer = await convertWebmToWav(audioBuffer);
+        } catch (conversionError) {
+          console.log("WebM conversion failed, using original format:", conversionError);
+          wavBuffer = audioBuffer;
+        }
 
-        const transcription = await openai.audio.transcriptions.create({
-          file: audioFile,
-          model: "whisper-1",
-          language: "en",
-        });
-
-        const transcriptText = transcription.text;
+        // Use the speechToText function which uses gpt-4o-mini-transcribe
+        const transcriptText = await speechToText(wavBuffer, "wav");
 
         if (transcriptText && transcriptText.trim().length > 0) {
           // Store the transcript
