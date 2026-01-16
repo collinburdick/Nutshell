@@ -418,6 +418,255 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Get aggregated summary for a session
+  app.get("/api/sessions/:id/aggregated-summary", async (req: Request, res: Response) => {
+    try {
+      const sessionId = parseInt(req.params.id);
+      const session = await storage.getSession(sessionId);
+      
+      if (!session) {
+        return res.status(404).json({ error: "Session not found" });
+      }
+
+      const sessionTables = await storage.getTablesBySession(sessionId);
+      const tableSummaries: Array<{
+        tableId: number;
+        tableNumber: number;
+        topic: string | null;
+        summary: { content: string; themes: string[]; actionItems: string[]; openQuestions: string[] } | null;
+      }> = [];
+
+      for (const table of sessionTables) {
+        const latestSummary = await storage.getLatestSummary(table.id);
+        tableSummaries.push({
+          tableId: table.id,
+          tableNumber: table.tableNumber,
+          topic: table.topic,
+          summary: latestSummary ? {
+            content: latestSummary.content,
+            themes: (latestSummary.themes as string[]) || [],
+            actionItems: (latestSummary.actionItems as string[]) || [],
+            openQuestions: (latestSummary.openQuestions as string[]) || [],
+          } : null,
+        });
+      }
+
+      const summariesWithContent = tableSummaries.filter(ts => ts.summary !== null);
+
+      if (summariesWithContent.length === 0) {
+        return res.json({
+          sessionName: session.name,
+          topic: session.topic,
+          tableSummaries,
+          aggregatedThemes: [],
+          aggregatedActionItems: [],
+          aggregatedOpenQuestions: [],
+          overallSummary: "No discussion summaries available yet.",
+        });
+      }
+
+      const summaryText = summariesWithContent.map(ts => 
+        `Table ${ts.tableNumber} (${ts.topic || 'General Discussion'}):\n` +
+        `Content: ${ts.summary?.content || 'No content'}\n` +
+        `Themes: ${(ts.summary?.themes || []).join(', ')}\n` +
+        `Action Items: ${(ts.summary?.actionItems || []).join(', ')}\n` +
+        `Open Questions: ${(ts.summary?.openQuestions || []).join(', ')}`
+      ).join('\n\n');
+
+      try {
+        const response = await openai.chat.completions.create({
+          model: "gpt-4o-mini",
+          messages: [
+            {
+              role: "system",
+              content: `You are an expert facilitator synthesizing insights from multiple roundtable discussions within a session. Analyze the summaries from different tables and create an aggregated view.
+
+Return a JSON object with:
+- "aggregatedThemes": array of 3-5 key themes that emerged across tables
+- "aggregatedActionItems": array of 3-5 consolidated action items
+- "aggregatedOpenQuestions": array of 3-5 unresolved questions
+- "overallSummary": a 2-3 sentence synthesis of the session's key insights`,
+            },
+            {
+              role: "user",
+              content: `Session: ${session.name}\nTopic: ${session.topic || 'General Discussion'}\n\nTable Summaries:\n${summaryText}`,
+            },
+          ],
+          response_format: { type: "json_object" },
+          max_completion_tokens: 1000,
+        });
+
+        const result = JSON.parse(response.choices[0]?.message?.content || "{}");
+
+        res.json({
+          sessionName: session.name,
+          topic: session.topic,
+          tableSummaries,
+          aggregatedThemes: result.aggregatedThemes || [],
+          aggregatedActionItems: result.aggregatedActionItems || [],
+          aggregatedOpenQuestions: result.aggregatedOpenQuestions || [],
+          overallSummary: result.overallSummary || "Summary generation complete.",
+        });
+      } catch (aiError) {
+        console.error("AI aggregation error:", aiError);
+        res.json({
+          sessionName: session.name,
+          topic: session.topic,
+          tableSummaries,
+          aggregatedThemes: [],
+          aggregatedActionItems: [],
+          aggregatedOpenQuestions: [],
+          overallSummary: "Unable to generate aggregated summary at this time.",
+        });
+      }
+    } catch (error) {
+      console.error("Error fetching session aggregated summary:", error);
+      res.status(500).json({ error: "Failed to fetch aggregated summary" });
+    }
+  });
+
+  // Get aggregated summary for an event
+  app.get("/api/events/:id/aggregated-summary", async (req: Request, res: Response) => {
+    try {
+      const eventId = parseInt(req.params.id);
+      const event = await storage.getEvent(eventId);
+      
+      if (!event) {
+        return res.status(404).json({ error: "Event not found" });
+      }
+
+      const eventSessions = await storage.getSessionsByEvent(eventId);
+      const sessionSummaries: Array<{
+        sessionId: number;
+        sessionName: string;
+        topic: string | null;
+        tableCount: number;
+        aggregatedThemes: string[];
+        aggregatedActionItems: string[];
+        aggregatedOpenQuestions: string[];
+        overallSummary: string;
+      }> = [];
+
+      for (const session of eventSessions) {
+        const sessionTables = await storage.getTablesBySession(session.id);
+        const tableSummaryContents: Array<{ content: string; themes: string[]; actionItems: string[]; openQuestions: string[] }> = [];
+        
+        for (const table of sessionTables) {
+          const latestSummary = await storage.getLatestSummary(table.id);
+          if (latestSummary) {
+            tableSummaryContents.push({
+              content: latestSummary.content,
+              themes: (latestSummary.themes as string[]) || [],
+              actionItems: (latestSummary.actionItems as string[]) || [],
+              openQuestions: (latestSummary.openQuestions as string[]) || [],
+            });
+          }
+        }
+
+        if (tableSummaryContents.length === 0) {
+          sessionSummaries.push({
+            sessionId: session.id,
+            sessionName: session.name,
+            topic: session.topic,
+            tableCount: sessionTables.length,
+            aggregatedThemes: [],
+            aggregatedActionItems: [],
+            aggregatedOpenQuestions: [],
+            overallSummary: "No discussion summaries available.",
+          });
+        } else {
+          const allThemes = tableSummaryContents.flatMap(s => s.themes);
+          const allActionItems = tableSummaryContents.flatMap(s => s.actionItems);
+          const allOpenQuestions = tableSummaryContents.flatMap(s => s.openQuestions);
+          
+          sessionSummaries.push({
+            sessionId: session.id,
+            sessionName: session.name,
+            topic: session.topic,
+            tableCount: sessionTables.length,
+            aggregatedThemes: [...new Set(allThemes)].slice(0, 5),
+            aggregatedActionItems: [...new Set(allActionItems)].slice(0, 5),
+            aggregatedOpenQuestions: [...new Set(allOpenQuestions)].slice(0, 5),
+            overallSummary: tableSummaryContents.map(s => s.content).join(' ').slice(0, 500),
+          });
+        }
+      }
+
+      const sessionsWithContent = sessionSummaries.filter(ss => ss.aggregatedThemes.length > 0 || ss.aggregatedActionItems.length > 0);
+
+      if (sessionsWithContent.length === 0) {
+        return res.json({
+          eventName: event.name,
+          description: event.description,
+          sessionSummaries,
+          aggregatedThemes: [],
+          aggregatedActionItems: [],
+          aggregatedOpenQuestions: [],
+          overallSummary: "No session summaries available yet.",
+        });
+      }
+
+      const sessionText = sessionsWithContent.map(ss => 
+        `Session: ${ss.sessionName} (${ss.topic || 'General'})\n` +
+        `Tables: ${ss.tableCount}\n` +
+        `Themes: ${ss.aggregatedThemes.join(', ')}\n` +
+        `Action Items: ${ss.aggregatedActionItems.join(', ')}\n` +
+        `Open Questions: ${ss.aggregatedOpenQuestions.join(', ')}\n` +
+        `Summary: ${ss.overallSummary}`
+      ).join('\n\n');
+
+      try {
+        const response = await openai.chat.completions.create({
+          model: "gpt-4o-mini",
+          messages: [
+            {
+              role: "system",
+              content: `You are an expert conference organizer synthesizing insights from multiple sessions at an event. Create a high-level synthesis that captures the event's key outcomes.
+
+Return a JSON object with:
+- "aggregatedThemes": array of 3-5 overarching themes across all sessions
+- "aggregatedActionItems": array of 3-5 priority action items from the event
+- "aggregatedOpenQuestions": array of 3-5 strategic questions for follow-up
+- "overallSummary": a 3-4 sentence executive summary of the event's key insights and outcomes`,
+            },
+            {
+              role: "user",
+              content: `Event: ${event.name}\nDescription: ${event.description || 'Conference event'}\n\nSession Summaries:\n${sessionText}`,
+            },
+          ],
+          response_format: { type: "json_object" },
+          max_completion_tokens: 1000,
+        });
+
+        const result = JSON.parse(response.choices[0]?.message?.content || "{}");
+
+        res.json({
+          eventName: event.name,
+          description: event.description,
+          sessionSummaries,
+          aggregatedThemes: result.aggregatedThemes || [],
+          aggregatedActionItems: result.aggregatedActionItems || [],
+          aggregatedOpenQuestions: result.aggregatedOpenQuestions || [],
+          overallSummary: result.overallSummary || "Event summary generation complete.",
+        });
+      } catch (aiError) {
+        console.error("AI aggregation error:", aiError);
+        res.json({
+          eventName: event.name,
+          description: event.description,
+          sessionSummaries,
+          aggregatedThemes: [],
+          aggregatedActionItems: [],
+          aggregatedOpenQuestions: [],
+          overallSummary: "Unable to generate event summary at this time.",
+        });
+      }
+    } catch (error) {
+      console.error("Error fetching event aggregated summary:", error);
+      res.status(500).json({ error: "Failed to fetch aggregated summary" });
+    }
+  });
+
   // Seed demo data for testing
   app.post("/api/seed-demo", async (req: Request, res: Response) => {
     try {

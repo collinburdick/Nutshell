@@ -64,6 +64,10 @@ export interface IStorage {
 
   // Admin
   getAllActiveTables(): Promise<Array<Table & { sessionName: string; eventName: string }>>;
+
+  // Aggregated summaries
+  getAllSummariesForSession(sessionId: number): Promise<Summary[]>;
+  getAllSummariesForEvent(eventId: number): Promise<Summary[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -232,6 +236,34 @@ export class DatabaseStorage implements IStorage {
       .where(eq(tables.status, "active"))
       .orderBy(desc(tables.lastActivityAt));
     return result;
+  }
+
+  // Aggregated summaries
+  async getAllSummariesForSession(sessionId: number): Promise<Summary[]> {
+    const sessionTables = await db.select().from(tables).where(eq(tables.sessionId, sessionId));
+    if (sessionTables.length === 0) return [];
+    
+    const tableIds = sessionTables.map(t => t.id);
+    const allSummaries = await db.select().from(summaries)
+      .where(sql`${summaries.tableId} IN ${tableIds}`)
+      .orderBy(desc(summaries.createdAt));
+    return allSummaries;
+  }
+
+  async getAllSummariesForEvent(eventId: number): Promise<Summary[]> {
+    const eventSessions = await db.select().from(sessions).where(eq(sessions.eventId, eventId));
+    if (eventSessions.length === 0) return [];
+    
+    const sessionIds = eventSessions.map(s => s.id);
+    const eventTables = await db.select().from(tables)
+      .where(sql`${tables.sessionId} IN ${sessionIds}`);
+    if (eventTables.length === 0) return [];
+    
+    const tableIds = eventTables.map(t => t.id);
+    const allSummaries = await db.select().from(summaries)
+      .where(sql`${summaries.tableId} IN ${tableIds}`)
+      .orderBy(desc(summaries.createdAt));
+    return allSummaries;
   }
 }
 
