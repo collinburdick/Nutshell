@@ -1,0 +1,576 @@
+# Nutshell PRD — “The whole room, in a nutshell.”
+
+**Author:** (You) Senior PM / Systems Architect
+**Platform:** React Native mobile app + web-based Admin Console (recommended)
+**Document Version:** 1.0 (Jan 15, 2026)
+
+---
+
+## 1) Executive Summary
+
+### Product Vision
+
+Nutshell is a **real-time conference intelligence platform** that captures breakout sessions and roundtables, **transcribes and de-identifies** dialogue, and delivers **instant thematic summaries** to facilitators and admins—at scale—without adding friction to the room.
+
+### The Problem
+
+Conferences generate high-value insights in small rooms: roundtables, workshops, breakouts. Today, that intelligence is:
+
+* **Lost** (captured inconsistently via notes)
+* **Biased** (who wrote the notes and what they missed)
+* **Slow** (summaries take days/weeks)
+* **Risky** (PII and sensitive remarks can leak)
+* **Unscalable** (admins can’t monitor 25–250 tables)
+
+### Goals (What “Great” Looks Like)
+
+1. **Capture**: >90% of active tables produce usable transcript segments and summaries.
+2. **Speed**: First coherent “local summary” delivered within **60–120 seconds** of session start.
+3. **Privacy**: Near-zero PII leakage in exports (measurable via automated redaction tests + audits).
+4. **Admin Control**: One admin can manage **100+ tables** with health monitoring, nudges, and pulse.
+5. **Value Realization**: Post-event insights dashboard used by attendees/sponsors with >40% engagement.
+
+### Non-Goals (Initial)
+
+* Replacing full event registration platforms (we integrate instead).
+* Perfect diarization (speaker recognition by identity). We use **de-identified speaker tags**.
+* “Always-on” surveillance—Nutshell is explicitly session-based with consent patterns.
+
+### Success Metrics (KPIs)
+
+**Acquisition/Activation**
+
+* Admin setup time for an event: median <15 minutes
+* Facilitator join + mic sync completion rate >95%
+
+**Quality**
+
+* Summary satisfaction (facilitator thumbs-up) >80%
+* Action item extraction precision target >70% (v1), >85% (v2)
+
+**Latency**
+
+* End-to-end pipeline latency (audio → transcript snippet) p95 <3s
+* Audio → updated summary p95 <10–15s (rolling)
+
+**Privacy**
+
+* PII scrubbing recall >99% on benchmark suite
+* Audit findings: 0 critical incidents
+
+---
+
+## 2) User Personas
+
+### Persona A: Event Admin (Primary Buyer/User)
+
+**Profile:** Conference producer, event ops lead, community manager
+**Goals:**
+
+* Stand up multi-session events quickly
+* Monitor many rooms/tables at once
+* Ensure timing consistency (nudges)
+* Extract sponsor-ready insights fast
+* Avoid privacy/legal issues
+  **Pain Points:**
+* Herding facilitators + inconsistent note capture
+* No visibility until it’s too late
+* Post-event reporting is manual + slow
+
+### Persona B: Session Facilitator (Primary In-Room User)
+
+**Profile:** Volunteer, staff moderator, partner facilitator
+**Goals:**
+
+* Start fast without accounts/passwords
+* Stay on topic with guide + prompts
+* See a live “what we’re hearing” summary
+* Keep participants comfortable (privacy)
+  **Pain Points:**
+* Tech friction at session start
+* Hard to synthesize discussion live
+* Managing time and prompts while moderating
+
+### Additional Personas (Recommended)
+
+* **Attendee/Participant (Secondary):** Wants outcomes, themes, and next steps after sessions.
+* **Sponsor/Partner Stakeholder:** Wants aggregate insights + sentiment without identities.
+* **Compliance/Legal (Internal Stakeholder):** Needs retention controls, consent, auditability.
+
+---
+
+## 3) Product Principles
+
+1. **Zero-friction start**: “Join with a code” should feel like scanning a QR at a restaurant.
+2. **Human-first privacy**: De-identification is not a feature; it’s a default.
+3. **Actionable in the moment**: Live summaries and nudges change outcomes *during* the session.
+4. **Scale by design**: Monitoring 5 tables and 150 tables should feel similarly manageable.
+5. **Trust through transparency**: Show what’s recorded, what’s scrubbed, and what’s shared.
+
+---
+
+## 4) Core Workflows (High Level)
+
+### Facilitator Flow (2-minute setup)
+
+1. Open Nutshell app → Enter **session code** (or scan QR)
+2. App requests mic permission → “Quick-Sync” connects
+3. Facilitator sees assigned table + topic + discussion guide
+4. Live transcript snippets + rolling “local summary”
+5. Receives admin nudges (time warnings, prompt changes)
+6. Ends session → confirms “Wrap-up highlights” (optional)
+
+### Admin Flow (Event setup → live ops → post-event)
+
+1. Create event → add sessions/breakouts + table count + topics
+2. Generate facilitator codes/QRs + share
+3. Live Command Center: health, activity, pulse, issues
+4. Push nudges to all or some tables
+5. Post-event Insight Dashboard: themes, action items, questions, exports
+
+---
+
+## 5) Functional Requirements (Detailed)
+
+### 5.1 Multi-Device “Quick-Sync” (No Formal Login)
+
+**Objective:** Allow facilitators to join instantly via code and begin audio capture reliably.
+
+**Requirements**
+
+* **Join Methods**
+
+  * Enter short code (6–8 chars) OR scan QR
+  * “No account required” for facilitators (admins can use SSO)
+* **Ephemeral Session Identity**
+
+  * Code exchanges for a **short-lived token** bound to event + table + session window
+  * Optional device nickname (“iPhone 14 – Table 7”)
+* **Local Microphone Sync**
+
+  * Minimal taps: Join → Allow mic → “Connected”
+  * Real-time mic level meter + ambient noise indicator
+* **Multi-Device Redundancy (Smart Addition)**
+
+  * Allow **up to N devices per table** (e.g., 2) for redundancy or larger tables
+  * Backend selects “best stream” (highest SNR) or merges when safe
+* **Connectivity Resilience**
+
+  * If network drops: buffer short audio locally (e.g., 60–120s) and backfill
+  * Clear UI states: Connected / Degraded / Offline Buffering / Reconnected
+* **Permissions + OS Constraints**
+
+  * Must support iOS/Android mic permissions, background audio (if permitted)
+  * “Screen-off mode” (keep recording while locked) where allowed
+
+**Acceptance Criteria**
+
+* Facilitator can join and begin streaming in <20 seconds median.
+* <2% sessions fail to capture any audio due to sync issues.
+
+---
+
+### 5.2 Facilitator Interface (Mobile, Low Friction)
+
+**Objective:** Keep facilitators focused on the room, not the phone.
+
+**Core Screens**
+
+1. **Join Screen**: code/QR, mic permission
+2. **Session Home** (main):
+
+   * Table topic + session title
+   * Discussion guide (bulleted prompts)
+   * Timer (start/end, plus agenda phases)
+   * Live “Local Summary” (rolling, updated periodically)
+   * “Capture Controls”: Pause/Resume (optional), End session
+3. **Live Signals Panel**:
+
+   * Connection health
+   * Mic level
+   * “Participants speaking distribution” (de-identified, approximate—optional)
+4. **Wrap-Up**:
+
+   * Quick confirm/edit: top 3 takeaways (suggested by AI)
+   * Confirm action items & open questions (one-tap approve)
+
+**UX Requirements**
+
+* One-thumb layout, high contrast, large typography
+* “Do Not Disturb” mode recommendation prompt on start
+* Accessible (WCAG-aligned), multilingual UI strings
+
+**Smart Additions**
+
+* **Prompt Deck**: Admin can push a new prompt (“Shift to barriers”)
+* **Hands-free mode**: Large “Start / End” buttons, minimal scrolling
+* **Consent prompt**: “Reminder: session is recorded and de-identified” with optional script
+
+---
+
+### 5.3 Admin Command Center (Scale Operations)
+
+**Objective:** Let a small team manage many live tables confidently.
+
+**Recommended Form Factor**
+
+* **Web app** for command center (large-screen operations)
+* Optional lightweight admin view in the mobile app
+
+**Core Capabilities**
+
+* **Event Builder**
+
+  * Create event → sessions → tables/topics
+  * Bulk import topics via CSV
+  * Assign facilitator codes and generate QR sheets
+* **Live Monitoring Dashboard**
+
+  * Total tables: Active / Inactive / Degraded / Offline
+  * Per-table status: last audio received, transcript freshness, summary freshness
+  * “Hot tables” (high activity, strong sentiment shifts, many action items)
+* **Pulse Sentiment Analysis**
+
+  * Aggregated sentiment per table (not per person)
+  * Trend lines over time (e.g., excitement/confusion)
+  * Confidence indicator (avoid over-trusting weak signals)
+* **Intervention Tools**
+
+  * Emergency nudges (see next section)
+  * Table reassignment (if a facilitator switches tables)
+  * “Session-wide announcement” banner
+* **Content Views**
+
+  * Live themes emerging across tables
+  * Live action items list (deduped)
+  * Live open questions list (deduped)
+
+**Smart Additions**
+
+* **Ops Playbooks**: one-click templates (“Workshop 45 min” with timed nudges)
+* **Auto-escalation**: alert admin if table has no audio for >60s
+* **Room Heatmap**: if venue mapping exists, show issues geographically
+
+---
+
+### 5.4 Emergency Nudge System (Instant Notifications)
+
+**Objective:** Let admins coordinate timing and prompts across rooms in seconds.
+
+**Requirements**
+
+* Targeting:
+
+  * All facilitators
+  * Specific session
+  * Specific tables
+  * Tag-based groups (e.g., “Beginner track”)
+* Message Types:
+
+  * Time warnings (“5 minutes left”)
+  * Prompt shift (“Move to solutions”)
+  * Urgent ops (“AV issue—pause recording”)
+* Delivery:
+
+  * Push notifications + in-app banners
+  * Offline fallback: show on reconnect; SMS fallback optional for critical events
+* Confirmation:
+
+  * Admin sees delivery stats (sent/delivered/opened)
+  * Facilitator can “Acknowledge” (optional) without typing
+
+**Guardrails**
+
+* Rate limiting to prevent spam
+* Pre-approved templates for speed and tone consistency
+
+---
+
+### 5.5 AI Insight Engine (Transcription → De-ID → Insights)
+
+**Objective:** Convert live conversation into safe, useful intelligence in real time.
+
+#### 5.5.1 Audio Processing & Transcription
+
+* Streaming transcription with low latency
+* Noise suppression + echo cancellation (device-level + optional server enhancements)
+* Language detection; multilingual transcription (phased)
+* Confidence scores per segment; drop low-confidence from summaries (or label)
+
+#### 5.5.2 PII Scrubbing / De-identification
+
+* Detect and redact:
+
+  * Names, emails, phone numbers
+  * Company names (configurable)
+  * Addresses, URLs, social handles
+  * Any custom patterns provided by event organizer (e.g., internal project codenames)
+* Output:
+
+  * Replace with tags: `[PERSON]`, `[EMAIL]`, `[ORG]` or generalized roles
+* Modes (Admin-configurable):
+
+  * **Strict** (default): aggressive redaction
+  * **Balanced**: preserve more context
+  * **Custom dictionary**: allow-list/deny-list terms
+* Human review (post-event, optional):
+
+  * Admin can review redactions before exporting externally
+
+#### 5.5.3 Real-Time Summaries
+
+* Per-table rolling summary updated every N seconds or after N tokens
+* “What we’re hearing” + “What’s unresolved”
+* Highlight contradictions and recurring themes
+
+#### 5.5.4 Structured Extraction
+
+* Action items: owner-less by default (to avoid identity leakage)
+* Open questions: phrased as attendee-safe prompts
+* Risks/concerns: grouped by category
+* Quotes: **disabled by default** (privacy risk). If enabled, must be short and redacted.
+
+**Smart Additions**
+
+* **Insight Deduplication** across tables (cluster similar action items)
+* **Theme Confidence + Evidence**: show supporting anonymized snippets (redacted)
+* **Post-event Q&A**: chat interface that answers “What did people say about pricing?” using only de-identified data
+
+---
+
+### 5.6 Speaker Attribution (De-identified Dialogue Flow)
+
+**Objective:** Preserve conversational structure without identifying participants.
+
+**Requirements**
+
+* Tag speakers as Speaker A/B/C… per table session
+* Maintain tag consistency across a session when possible
+* Do not attempt biometric identity or cross-session linking
+* UI can optionally show “Speaker Count” and “Turn-taking balance” in aggregate (privacy-safe)
+
+**Quality Constraints**
+
+* If diarization confidence is low, degrade gracefully:
+
+  * Combine into “Speaker 1/2” only, or omit speaker tags entirely
+
+---
+
+### 5.7 Integration & Export + Insight Dashboard
+
+**Objective:** Turn event intelligence into action where teams already work.
+
+#### 5.7.1 Insight Dashboard (Post-event)
+
+Audience: attendees, sponsors, internal teams
+Views:
+
+* Executive themes overview
+* Session-level and table-level insights (de-identified)
+* Top action items + owners (manual assignment after export)
+* Open questions
+* Sentiment/pulse timeline
+* Search and filter by topic, track, tag
+
+Permissions:
+
+* Admin controls what’s visible to attendees vs internal only
+* Link-sharing with expiration; SSO for internal events
+
+#### 5.7.2 One-click Export
+
+* Slack: post to channels + threads (per session)
+* Notion: create pages/databases with structured fields
+* Salesforce: create notes/opportunities insights (B2B events), attach as activity
+
+**Smart Additions**
+
+* Webhooks + API for custom integrations
+* Export “Insight Pack” PDF for sponsors (sanitized, branded)
+* Data warehouse export (Snowflake/BigQuery) for enterprise customers
+
+---
+
+## 6) Technical Constraints & Non-Functional Requirements
+
+### 6.1 Low-latency Targets (Suggested Budgets)
+
+* Audio chunking: 250–500ms frames
+* Network uplink buffering: <1–2s
+* ASR streaming: p95 <3s per segment
+* Summarization refresh: p95 <10–15s
+* Admin dashboard refresh: <5s perceived
+
+### 6.2 Privacy & Security Protocols
+
+* Explicit consent model:
+
+  * Event-level consent statement + facilitator script
+  * Optional participant opt-out guidance (process defined per event)
+* Data minimization:
+
+  * Default: store transcript + insights; raw audio retention configurable (off by default for privacy-sensitive events)
+* Encryption:
+
+  * In transit: TLS
+  * At rest: encrypted storage
+* Access control:
+
+  * RBAC for admins (Organizer, Ops, Analyst, Viewer)
+  * Facilitators only access assigned table session
+* Audit logs:
+
+  * Who exported what, when, and to where
+* Retention policies:
+
+  * Configurable retention windows; auto-delete
+* Compliance readiness:
+
+  * SOC2-aligned controls, GDPR/CCPA considerations (depending on market)
+
+### 6.3 React Native Mobile Constraints
+
+* Must use native audio modules for reliable capture (RN bridge)
+* Battery/thermal constraints:
+
+  * Efficient encoding (Opus/AAC) and adaptive bitrate
+* Background mode:
+
+  * iOS background audio requires careful entitlement usage and user-visible behavior
+* Push notifications:
+
+  * Must be reliable in poor conference Wi-Fi; fallback options recommended
+
+### 6.4 Scalability & Reliability
+
+* Support large events: 1,000+ concurrent tables (stretch)
+* Horizontal scaling for:
+
+  * Session orchestration
+  * Streaming ingestion
+  * ASR workers
+  * NLP summarization workers
+* Graceful degradation:
+
+  * If AI pipeline delays, still capture audio and backfill summary later
+
+---
+
+## 7) High-Level System Architecture (Suggested)
+
+**React Native App (Facilitator)**
+
+* Audio capture (native)
+* Local VAD (voice activity detection) + compression
+* Secure streaming client
+* Local UI summary updates (from server)
+
+**Backend Services**
+
+1. **Session Orchestrator**
+
+   * Validates join codes, issues tokens
+   * Tracks table state, device membership
+2. **Streaming Ingestion**
+
+   * Receives audio streams, handles buffering
+3. **ASR Service**
+
+   * Streaming transcription (provider or self-hosted)
+4. **De-ID / PII Scrubber**
+
+   * Real-time redaction pass + configurable policies
+5. **Insight Engine**
+
+   * Theme clustering, action items, questions, sentiment/pulse
+6. **Admin APIs + Web App**
+
+   * Monitoring, nudges, exports
+7. **Data Store**
+
+   * Event metadata, transcripts, insights, audit logs
+8. **Integration Layer**
+
+   * Slack/Notion/Salesforce connectors, webhooks
+
+---
+
+## 8) User Stories (Key Workflows)
+
+### Admin Stories
+
+1. **Create event with many sessions**
+
+   * As an admin, I can create an event with multiple sessions and bulk-import table topics so setup is fast.
+   * **Acceptance:** import validates errors; generates codes/QRs per table.
+
+2. **Monitor table health**
+
+   * As an admin, I can see which tables are active, degraded, or offline so I can intervene.
+   * **Acceptance:** health reflects last audio/transcript time; alerts after threshold.
+
+3. **Send nudge to a subset**
+
+   * As an admin, I can send “5 minutes left” to Session B only.
+   * **Acceptance:** delivery stats visible; facilitators see banner within seconds.
+
+4. **Review and export insights safely**
+
+   * As an admin, I can review redactions and export to Slack/Notion/Salesforce.
+   * **Acceptance:** export respects permission scope; audit log created.
+
+### Facilitator Stories
+
+1. **Join with no login**
+
+   * As a facilitator, I can enter a code and start capturing in <20 seconds.
+   * **Acceptance:** minimal steps; clear “connected” state.
+
+2. **Stay on guide**
+
+   * As a facilitator, I see my discussion prompts and a timer so I can keep the group on track.
+   * **Acceptance:** prompts are readable, tappable sections, minimal scrolling.
+
+3. **Use live summary**
+
+   * As a facilitator, I can glance at a live summary to reflect and steer the conversation.
+   * **Acceptance:** summary updates periodically; shows confidence/“last updated”.
+
+4. **Receive nudges**
+
+   * As a facilitator, I see time warnings and prompt shifts without leaving the session screen.
+   * **Acceptance:** banner appears, optionally requires one-tap acknowledgment.
+
+### Attendee/Sponsor Stories (Recommended)
+
+1. **Browse insights**
+
+   * As an attendee, I can review themes and action items from sessions I attended.
+2. **Search**
+
+   * As a sponsor, I can filter insights by topic track and sentiment to understand market feedback.
+
+---
+
+## 9) Edge Cases & Failure Modes
+
+* **Noisy room / cross-talk:** degrade summary confidence, encourage second device placement
+* **Capture ALL transcripts from the tables in raw format as well. Allow admins to download all raw transcripts
+* **Poor Wi-Fi:** local buffering + delayed backfill; admin sees degraded status
+* **Mic permission denied:** fallback onboarding to re-enable; cannot proceed without mic
+* **Facilitator swap mid-session:** allow “handoff” code to new device, maintain continuity
+* **Privacy-sensitive events:** strict mode, no audio retention, attendee dashboard disabled
+
+---
+
+## 10) Smart Additions to “Wow” Users
+
+1. **Auto-generated “Session Closing Script”** for facilitators based on live themes (“Here’s what I’m hearing…”)
+2. **Real-time cross-table synthesis** (“Top 5 themes across all roundtables right now”)
+3. **Confidence & provenance UX**: show *why* a theme is trending (redacted evidence snippets)
+4. **Insight assignments**: convert action items into tasks (Asana/Jira) post-event
+5. **Gamified facilitator quality signals**: “You covered 4/5 prompts” (private to facilitator)
+6. **Role-based dashboards**: sponsor-safe view vs internal-only view with deeper detail
+7. **Multilingual mode**: translate summaries into event’s primary language for global audiences
+8. **Event Insights Article**: automatically generate an event insights article written like a reporter who is trying to educate an audience from what they learned from the session.
