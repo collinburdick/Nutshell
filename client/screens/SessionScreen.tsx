@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   View,
   StyleSheet,
@@ -11,6 +11,7 @@ import { Feather } from "@expo/vector-icons";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import * as Haptics from "expo-haptics";
 import { useAudioRecorder, RecordingPresets, AudioModule } from "expo-audio";
+import * as FileSystem from "expo-file-system";
 import { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useNavigation, useRoute, RouteProp } from "@react-navigation/native";
 import Animated, {
@@ -75,9 +76,12 @@ export default function SessionScreen() {
   const [sessionStartTime, setSessionStartTime] = useState<Date | null>(null);
   const [activeNudge, setActiveNudge] = useState<NudgeData | null>(null);
   const [hasPermission, setHasPermission] = useState(false);
+  const [transcriptionStatus, setTranscriptionStatus] = useState<string>("");
   
   const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const recordingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const audioChunkIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const isRecordingRef = useRef(false);
   const pulseAnim = useSharedValue(1);
 
   const { data: tableData, isLoading: tableLoading } = useQuery<TableData>({
@@ -113,16 +117,84 @@ export default function SessionScreen() {
 
   const sendAudioMutation = useMutation({
     mutationFn: async (audioBase64: string) => {
+      setTranscriptionStatus("Processing audio...");
       const res = await apiRequest("POST", `/api/tables/${tableId}/audio`, {
         token,
         audio: audioBase64,
       });
       return res.json();
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
+      if (data.transcription) {
+        setTranscriptionStatus("Transcribed successfully");
+        setTimeout(() => setTranscriptionStatus(""), 2000);
+      } else {
+        setTranscriptionStatus("");
+      }
       refetchSummary();
     },
+    onError: (error) => {
+      console.error("Audio upload error:", error);
+      setTranscriptionStatus("Transcription error");
+      setTimeout(() => setTranscriptionStatus(""), 2000);
+    },
   });
+
+  // Function to capture audio and send to backend
+  const captureAndSendAudio = useCallback(async () => {
+    if (!audioRecorder.isRecording || audioRecorder.uri === null) {
+      return;
+    }
+
+    try {
+      // Stop current recording to get the audio file
+      await audioRecorder.stop();
+      const uri = audioRecorder.uri;
+
+      if (uri) {
+        if (Platform.OS === "web") {
+          // On web, fetch the blob and convert to base64
+          try {
+            const response = await fetch(uri);
+            const blob = await response.blob();
+            const reader = new FileReader();
+            reader.onloadend = () => {
+              const base64 = (reader.result as string).split(",")[1];
+              if (base64 && base64.length > 100) {
+                sendAudioMutation.mutate(base64);
+              }
+            };
+            reader.readAsDataURL(blob);
+          } catch (webError) {
+            console.error("Web audio capture error:", webError);
+          }
+        } else {
+          // On native, use FileSystem to read as base64
+          const base64 = await FileSystem.readAsStringAsync(uri, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          if (base64 && base64.length > 100) {
+            sendAudioMutation.mutate(base64);
+          }
+        }
+      }
+
+      // Restart recording for next chunk if still in recording mode
+      if (isRecordingRef.current) {
+        audioRecorder.record();
+      }
+    } catch (error) {
+      console.error("Error capturing audio:", error);
+      // Try to restart recording
+      if (isRecordingRef.current) {
+        try {
+          audioRecorder.record();
+        } catch (e) {
+          console.error("Failed to restart recording:", e);
+        }
+      }
+    }
+  }, [audioRecorder, sendAudioMutation]);
 
   const requestPermission = async () => {
     const status = await AudioModule.requestRecordingPermissionsAsync();
@@ -145,6 +217,7 @@ export default function SessionScreen() {
 
       audioRecorder.record();
       setIsRecording(true);
+      isRecordingRef.current = true;
       setSessionStartTime(new Date());
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
@@ -157,12 +230,20 @@ export default function SessionScreen() {
         true
       );
 
+      // Mic level indicator (simulated for now)
       recordingIntervalRef.current = setInterval(() => {
-        if (audioRecorder.isRecording && !isPaused) {
+        if (isRecordingRef.current && !isPaused) {
           const level = Math.random() * 0.5 + 0.3;
           setMicLevel(level);
         }
       }, 100);
+
+      // Capture and send audio every 30 seconds for rolling transcription
+      audioChunkIntervalRef.current = setInterval(() => {
+        if (isRecordingRef.current && !isPaused) {
+          captureAndSendAudio();
+        }
+      }, 30000);
 
     } catch (error) {
       console.error("Failed to start recording:", error);
@@ -172,15 +253,54 @@ export default function SessionScreen() {
 
   const stopRecording = async () => {
     try {
-      await audioRecorder.stop();
-      setIsRecording(false);
-      setMicLevel(0);
-      pulseAnim.value = 1;
-
+      isRecordingRef.current = false;
+      
+      // Clear intervals first
       if (recordingIntervalRef.current) {
         clearInterval(recordingIntervalRef.current);
         recordingIntervalRef.current = null;
       }
+      if (audioChunkIntervalRef.current) {
+        clearInterval(audioChunkIntervalRef.current);
+        audioChunkIntervalRef.current = null;
+      }
+
+      // Stop recording and capture final audio
+      if (audioRecorder.isRecording) {
+        await audioRecorder.stop();
+        const uri = audioRecorder.uri;
+
+        // Send the final audio chunk
+        if (uri) {
+          try {
+            if (Platform.OS === "web") {
+              const response = await fetch(uri);
+              const blob = await response.blob();
+              const reader = new FileReader();
+              reader.onloadend = () => {
+                const base64 = (reader.result as string).split(",")[1];
+                if (base64 && base64.length > 100) {
+                  sendAudioMutation.mutate(base64);
+                }
+              };
+              reader.readAsDataURL(blob);
+            } else {
+              const base64 = await FileSystem.readAsStringAsync(uri, {
+                encoding: FileSystem.EncodingType.Base64,
+              });
+              if (base64 && base64.length > 100) {
+                sendAudioMutation.mutate(base64);
+              }
+            }
+          } catch (readError) {
+            console.error("Error reading final audio:", readError);
+          }
+        }
+      }
+
+      setIsRecording(false);
+      setMicLevel(0);
+      pulseAnim.value = 1;
 
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     } catch (error) {
@@ -209,11 +329,15 @@ export default function SessionScreen() {
 
   useEffect(() => {
     return () => {
+      isRecordingRef.current = false;
       if (audioRecorder.isRecording) {
         audioRecorder.stop();
       }
       if (recordingIntervalRef.current) {
         clearInterval(recordingIntervalRef.current);
+      }
+      if (audioChunkIntervalRef.current) {
+        clearInterval(audioChunkIntervalRef.current);
       }
     };
   }, []);
@@ -345,6 +469,15 @@ export default function SessionScreen() {
           )}
         </View>
       </ScrollView>
+
+      {transcriptionStatus ? (
+        <View style={[styles.transcriptionStatus, { backgroundColor: theme.backgroundSecondary }]}>
+          <Feather name="activity" size={14} color={theme.textSecondary} />
+          <ThemedText type="caption" style={{ color: theme.textSecondary, marginLeft: Spacing.xs }}>
+            {transcriptionStatus}
+          </ThemedText>
+        </View>
+      ) : null}
 
       <View style={[styles.controls, { paddingBottom: insets.bottom + Spacing.lg }]}>
         {isRecording ? (
@@ -548,5 +681,12 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.2)",
     alignItems: "center",
     justifyContent: "center",
+  },
+  transcriptionStatus: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.lg,
   },
 });
