@@ -125,6 +125,18 @@ export default function EventDetailScreen() {
               </ThemedText>
             </View>
           </View>
+          <Pressable
+            onPress={() => navigation.navigate("EventSummary", { eventId })}
+            style={({ pressed }) => [
+              styles.summaryButton,
+              { backgroundColor: theme.link, opacity: pressed ? 0.8 : 1 },
+            ]}
+          >
+            <Feather name="bar-chart-2" size={18} color={theme.buttonText} />
+            <ThemedText type="body" style={{ color: theme.buttonText, fontWeight: "600" }}>
+              View Event Summary
+            </ThemedText>
+          </Pressable>
         </View>
 
         <View style={styles.sectionHeader}>
@@ -307,6 +319,16 @@ const styles = StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 4,
+  },
+  summaryButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: Spacing.sm,
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.lg,
+    borderRadius: BorderRadius.md,
+    marginTop: Spacing.md,
   },
   sectionHeader: {
     flexDirection: "row",

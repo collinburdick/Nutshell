@@ -190,6 +190,18 @@ export default function SessionDetailScreen() {
 
         <View style={styles.actionsRow}>
           <Pressable
+            onPress={() => navigation.navigate("SessionSummary", { sessionId })}
+            style={({ pressed }) => [
+              styles.actionButton,
+              { backgroundColor: theme.link, opacity: pressed ? 0.8 : 1 },
+            ]}
+          >
+            <Feather name="bar-chart-2" size={18} color={theme.buttonText} />
+            <ThemedText type="caption" style={{ color: theme.buttonText, fontWeight: "600" }}>
+              Summary
+            </ThemedText>
+          </Pressable>
+          <Pressable
             onPress={() => {
               setSelectedTableId(null);
               setShowNudgeModal(true);
