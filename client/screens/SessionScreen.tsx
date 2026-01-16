@@ -12,6 +12,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import * as Haptics from "expo-haptics";
 import { useAudioRecorder, RecordingPresets, AudioModule } from "expo-audio";
 import * as FileSystem from "expo-file-system";
+import { EncodingType } from "expo-file-system";
 import { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useNavigation, useRoute, RouteProp } from "@react-navigation/native";
 import Animated, {
@@ -171,7 +172,7 @@ export default function SessionScreen() {
         } else {
           // On native, use FileSystem to read as base64
           const base64 = await FileSystem.readAsStringAsync(uri, {
-            encoding: FileSystem.EncodingType.Base64,
+            encoding: EncodingType.Base64,
           });
           if (base64 && base64.length > 100) {
             sendAudioMutation.mutate(base64);
