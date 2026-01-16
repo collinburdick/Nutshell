@@ -28,7 +28,23 @@ Preferred communication style: Simple, everyday language.
   - `JoinScreen`: 6-character code entry for facilitators
   - `SessionScreen`: Live recording with mic levels, timer, nudge banners
   - `WrapUpScreen`: Review and approve AI-generated insights
+  - `SessionSummaryScreen`: Comprehensive session insights with Present/Explore modes
+  - `EventSummaryScreen`: Aggregated event insights across all sessions
   - Admin screens: Dashboard, Event/Session management, Live Monitoring
+
+### Summary Screens Feature Set
+The summary screens (Session and Event) provide comprehensive AI-generated insights:
+- **Themes with Frequency**: Discussion themes ordered by prevalence (High/Medium/Low badges)
+- **Key Questions**: Important unanswered questions from discussions
+- **Key Insights**: Major takeaways and learnings
+- **AI Summary**: Executive summary of session/event outcomes
+- **Detailed Themes**: In-depth theme analysis with descriptions and key points
+- **Notable Quotes**: Interesting or impactful statements (privacy-protected)
+- **AI Analysis**: Deeper insights with analysis and recommendations
+
+**Display Modes:**
+- **Present Mode**: Large text optimized for projectors with dark/light toggle
+- **Explore Mode**: Interactive drill-down with collapsible sections, search, and copy functionality
 
 ### Backend (Express + Node.js)
 
